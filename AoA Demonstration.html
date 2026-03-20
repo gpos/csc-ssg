@@ -440,7 +440,7 @@
 
     function updateTackStatus() {
       const tack = getTackInfo();
-      const tackLabel = tack.mode === 'port' ? 'PORT TACK' : 'STARBOARD TACK';
+      const tackLabel = tack.sailSign > 0 ? 'PORT TACK' : 'STARBOARD TACK';
       if (tack.mode === 'irons') {
         tackStatusEl.textContent = tack.luffMode === 'highlight' ? `PINCHING - ${tackLabel}` : 'IN IRONS';
         return;
