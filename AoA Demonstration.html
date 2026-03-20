@@ -69,7 +69,7 @@
       padding: 10px 14px;
       border-radius: 12px;
       user-select: none;
-      pointer-events: none;
+      pointer-events: auto;
     }
 
     .chord-report.is-hidden {
@@ -317,8 +317,11 @@
       updateAll();
     });
     debugCheckboxEl.addEventListener('change', updateDebugVisibility);
+    debugCheckboxEl.addEventListener('input', updateDebugVisibility);
     guidesCheckboxEl.addEventListener('change', updateGuideVisibility);
+    guidesCheckboxEl.addEventListener('input', updateGuideVisibility);
     dashedLinesCheckboxEl.addEventListener('change', updateDashedLineVisibility);
+    dashedLinesCheckboxEl.addEventListener('input', updateDashedLineVisibility);
     function buildSceneObjects() {
       const hull = buildClosedStrokeMesh(buildHullPoints(), CONFIG.hullStrokeWidth, 0x000000);
       boat.add(hull);
@@ -522,17 +525,20 @@
 
     function updateDebugVisibility() {
       chordReportEl.classList.toggle('is-hidden', !debugCheckboxEl.checked);
+      render();
     }
 
     function updateGuideVisibility() {
       const visible = guidesCheckboxEl.checked;
       objects.outerRing.visible = visible;
       objects.innerRing.visible = visible;
+      render();
     }
 
     function updateDashedLineVisibility() {
       const visible = dashedLinesCheckboxEl.checked;
       objects.chords.group.visible = visible;
+      render();
     }
 
     function updateWorldTransform() {
