@@ -1,0 +1,960 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>True vs Apparent Wind (WebGL)</title>
+  <style>
+    
+    html, body {
+      font-weight: 800; margin: 0; height: 100%; overflow: hidden; background: #0b0f14;
+      overscroll-behavior: none;
+      touch-action: none;
+    }
+    canvas { display: block; touch-action: none; }
+
+    #ui {
+      position: fixed; left: 16px; top: 16px; z-index: 10;
+      font: 800 clamp(16px, 2.2vw, 24px)/1.25 "Segoe UI", "Segoe UI Variable", Arial, sans-serif;
+      color: #e6edf3;
+      background: rgba(10,15,20,.78);
+      padding: 14px 16px;
+      border-radius: 14px;
+      backdrop-filter: blur(6px);
+      user-select: none;
+      max-width: 560px;
+    }
+    #ui .row { margin-bottom: 12px; }
+    #ui input[type="range"] { width: 230px; height: 30px; }
+    #ui button { cursor: pointer; font: 900 18px/1 "Segoe UI", "Segoe UI Variable", Arial, sans-serif; color: #e6edf3; background: rgba(230,237,243,0.10); border: 2px solid rgba(230,237,243,0.25); padding: 10px 14px; border-radius: 12px; }
+    #ui button:active { transform: translateY(1px); }
+    #leafRow { display: flex; gap: 14px; align-items: center; margin-top: 8px; }
+    #leafRow input[type="checkbox"] { transform: scale(1.8); transform-origin: left center; }
+
+
+    #dials{
+      position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%);
+      z-index: 11;
+      display: flex; gap: 10px;
+      background: rgba(10,15,20,.55);
+      border: 2px solid rgba(230,237,243,.14);
+      border-radius: 14px;
+      padding: 8px 10px;
+      backdrop-filter: blur(6px);
+      user-select: none;
+      pointer-events: none;
+    }
+    .dial{
+      width: 173px;
+      display:flex; flex-direction:column; align-items:center; gap:8px;
+      pointer-events:none;
+      font: 800 23px/1 "Segoe UI", "Segoe UI Variable", Arial, sans-serif;
+      color:#e6edf3;
+      letter-spacing: .2px;
+      text-transform: none;
+    }
+
+    .dial-true { color:#BF9000; }
+    .dial-app  { color:#E69138; }
+    .dial-head { color:#990000; }
+    .dial-speed{ color:#e6edf3; }
+
+    .dial canvas{ width: 90px; height:90px; border-radius: 999px; }
+
+  
+    @media (max-width: 720px), (max-height: 520px) {
+      #dials { display: none !important; }
+    }
+  </style>
+</head>
+<body>
+  <div id="ui">
+    <div class="row">
+      <div>Speed: <span id="spd">0.0 mph</span></div>
+      <input id="speed" type="range" min="0" max="30" step="0.1" value="0" />
+    </div>
+    <div class="row" style="margin-bottom:10px;">
+      <button id="playPause" type="button">Pause</button>
+    </div>
+    <div id="leafRow">
+      <input id="leaves" type="checkbox" checked />
+      <label for="leaves" style="margin:0;">Show leaves</label>
+    </div>
+  </div>
+
+
+  <div id="dials" aria-hidden="true">
+    <div class="dial dial-true"><canvas id="dialTrue" width="136" height="136"></canvas><div>True</div></div>
+    <div class="dial dial-app"><canvas id="dialApp" width="136" height="136"></canvas><div>Apparent</div></div>
+    <div class="dial dial-head"><canvas id="dialHead" width="136" height="136"></canvas><div>Headwind</div></div>
+    <div class="dial dial-speed"><canvas id="dialSpeed" width="136" height="136"></canvas><div>Speed</div></div>
+  </div>
+
+
+  <script type="module">
+    import * as THREE from "https://unpkg.com/three@0.160.0/build/three.module.js";
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+
+    renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+    document.body.appendChild(renderer.domElement);
+    // ensure canvas is not affected by DOM flow
+    renderer.domElement.style.position = "fixed";
+    renderer.domElement.style.left = "0";
+    renderer.domElement.style.top = "0";
+    renderer.domElement.style.zIndex = "0";
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x0b0f14);
+
+    const camera = new THREE.OrthographicCamera(-10, 10, 6, -6, -100, 100);
+    camera.position.set(0, 0, 10);
+    camera.lookAt(0, 0, 0);
+
+    function resize() {
+      const w = window.innerWidth, h = window.innerHeight;
+      // Mobile/readability scaling
+      const minDim = Math.min(w, h);
+      window.__LABEL_FONT_PX = Math.round(Math.max(20, Math.min(40, 32 * (minDim / 768))));
+      if (typeof rebuildVectorLabels === "function") rebuildVectorLabels();
+      renderer.setSize(w, h);
+      const aspect = w / h;
+      const viewHalfH = 6;
+      const viewHalfW = viewHalfH * aspect;
+      camera.left = -viewHalfW;
+      camera.right = viewHalfW;
+      camera.top = viewHalfH;
+      camera.bottom = -viewHalfH;
+      camera.updateProjectionMatrix();
+    }
+    window.addEventListener("resize", resize);
+    resize();
+
+    // Prevent page scroll / rubber-band on touch devices
+    window.addEventListener("touchmove", (e) => {
+      if (e.target === renderer.domElement || renderer.domElement.contains(e.target)) e.preventDefault();
+    }, { passive: false });
+
+    const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
+
+    function makeRoundedRect(w, h, r) {
+      const shape = new THREE.Shape();
+      const x = -w/2, y = -h/2;
+      shape.moveTo(x + r, y);
+      shape.lineTo(x + w - r, y);
+      shape.quadraticCurveTo(x + w, y, x + w, y + r);
+      shape.lineTo(x + w, y + h - r);
+      shape.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+      shape.lineTo(x + r, y + h);
+      shape.quadraticCurveTo(x, y + h, x, y + h - r);
+      shape.lineTo(x, y + r);
+      shape.quadraticCurveTo(x, y, x + r, y);
+      return shape;
+    }
+
+    // Vector labels: shrink to 32px
+    function makeTextSprite(text, color = "#e6edf3") {
+      const canvas = document.createElement("canvas");
+      const ctx = canvas.getContext("2d");
+
+      const fontPx = (window.__LABEL_FONT_PX || 32);
+      const font = `800 ${fontPx}px "Segoe UI", "Segoe UI Variable", Arial, sans-serif`;
+      ctx.font = font;
+
+      const padX = 18, padY = 12;
+      const metrics = ctx.measureText(text);
+      const textW = Math.ceil(metrics.width);
+      const textH = Math.ceil(fontPx * 1.125);
+
+      canvas.width = textW + padX * 2;
+      canvas.height = textH + padY * 2;
+
+      ctx.font = font;
+      ctx.textBaseline = "middle";
+      ctx.textAlign = "left";
+
+      const r = 14;
+      const w = canvas.width, h = canvas.height;
+
+      ctx.fillStyle = "rgba(10,15,20,0.82)";
+      ctx.strokeStyle = "rgba(230,237,243,0.26)";
+      ctx.lineWidth = 2;
+ctx.beginPath();
+      ctx.moveTo(r, 0);
+      ctx.lineTo(w - r, 0);
+      ctx.quadraticCurveTo(w, 0, w, r);
+      ctx.lineTo(w, h - r);
+      ctx.quadraticCurveTo(w, h, w - r, h);
+      ctx.lineTo(r, h);
+      ctx.quadraticCurveTo(0, h, 0, h - r);
+      ctx.lineTo(0, r);
+      ctx.quadraticCurveTo(0, 0, r, 0);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.fillStyle = color;
+      ctx.fillText(text, padX, h / 2);
+
+      const tex = new THREE.CanvasTexture(canvas);
+      tex.minFilter = THREE.LinearFilter;
+      tex.magFilter = THREE.LinearFilter;
+      tex.generateMipmaps = false;
+
+      
+      tex.colorSpace = THREE.SRGBColorSpace;
+const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false });
+      const spr = new THREE.Sprite(mat);
+
+      const pxToWorld = 0.0145;
+      spr.scale.set(canvas.width * pxToWorld, canvas.height * pxToWorld, 1);
+      spr.renderOrder = 9999;
+
+      spr.userData = { lastChoice: 0 };
+      return spr;
+    }
+
+    function makeLeafTexture() {
+      const c = document.createElement("canvas");
+      c.width = 64; c.height = 64;
+      const g = c.getContext("2d");
+      g.clearRect(0, 0, 64, 64);
+
+      g.save();
+      g.translate(32, 32);
+      g.rotate(-0.6);
+      g.scale(1.0, 0.65);
+
+      g.beginPath();
+      g.ellipse(0, 0, 20, 30, 0, 0, Math.PI * 2);
+      g.fillStyle = "rgba(80, 220, 140, 0.95)";
+      g.fill();
+
+      g.lineWidth = 3;
+      g.strokeStyle = "rgba(15, 60, 35, 0.55)";
+      g.beginPath();
+      g.moveTo(0, -26);
+      g.lineTo(0, 26);
+      g.stroke();
+      g.restore();
+
+      const tex = new THREE.CanvasTexture(c);
+      tex.minFilter = THREE.LinearFilter;
+      tex.magFilter = THREE.LinearFilter;
+      tex.generateMipmaps = false;
+      return tex;
+    }
+
+    // ---------- Scenery that rotates with car (road only) ----------
+    const scenery = new THREE.Group();
+    scenery.position.z = -2.8;
+    scene.add(scenery);
+
+    const roadW = 2.7;
+    const road = new THREE.Mesh(
+      new THREE.PlaneGeometry(220, roadW),
+      new THREE.MeshBasicMaterial({ color: 0x141b24, transparent: false, opacity: 1.0, depthWrite: true })
+    );
+    road.position.z = -0.3;
+    scenery.add(road);
+
+    const edgeMat = new THREE.LineBasicMaterial({ color: 0x2a3747 });
+    const edgeGeo = new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(-220, roadW/2, -0.2), new THREE.Vector3(220, roadW/2, -0.2),
+      new THREE.Vector3(-220,-roadW/2, -0.2), new THREE.Vector3(220,-roadW/2, -0.2),
+    ]);
+    scenery.add(new THREE.LineSegments(edgeGeo, edgeMat));
+
+    // ---------- Trees group (north-up; does not rotate) ----------
+    const treesGroup = new THREE.Group();
+    treesGroup.position.z = -3.8;
+    scene.add(treesGroup);
+
+    function makeTree() {
+      const g = new THREE.Group();
+      const trunk = new THREE.Mesh(
+        new THREE.PlaneGeometry(0.12, 0.32),
+        new THREE.MeshBasicMaterial({ color: 0x6b4f2a })
+      );
+      trunk.position.y = -0.18;
+      const crown = new THREE.Mesh(
+        new THREE.CircleGeometry(0.26, 18),
+        new THREE.MeshBasicMaterial({ color: 0x1f6a3a })
+      );
+      crown.position.y = 0.06;
+      g.add(trunk, crown);
+      return g;
+    }
+
+    const trees = [];
+    const TREE_COUNT = 44;
+    const bandY = roadW/2 + 0.9;
+    const spanX = 28;
+
+    for (let i = 0; i < TREE_COUNT; i++) {
+      const t = makeTree();
+      t.position.x = (Math.random() * spanX) - spanX/2;
+      t.position.y = (i % 2 === 0) ? (bandY + Math.random()*2.6) : (-bandY - Math.random()*2.6);
+      t.scale.setScalar(0.95 + Math.random()*0.8);
+      treesGroup.add(t);
+      trees.push(t);
+    }
+
+    // ---------- Car ----------
+    const car = new THREE.Group();
+    car.scale.set(1.5, 1.5, 1);
+    car.position.z = 1.0;
+    scene.add(car);
+
+    const carBody = new THREE.Mesh(
+      new THREE.ShapeGeometry(makeRoundedRect(1.4, 0.8, 0.18), 24),
+      new THREE.MeshBasicMaterial({ color: 0x2c3d52 })
+    );
+    const carRoof = new THREE.Mesh(
+      new THREE.ShapeGeometry(makeRoundedRect(0.9, 0.5, 0.14), 24),
+      new THREE.MeshBasicMaterial({ color: 0x384e68 })
+    );
+    carRoof.position.z = 0.1;
+
+    car.add(carBody, carRoof);
+
+        const HANDLE_R = 0.16;
+
+// Rotation handle moved to trunk (car-local -x)
+    const rotateHandle = new THREE.Mesh(
+      new THREE.CircleGeometry(HANDLE_R, 28),
+      new THREE.MeshBasicMaterial({ color: 0xffffff, depthTest: false })
+    );
+    rotateHandle.position.set(-1.25, 0, 0.35);
+    rotateHandle.renderOrder = 2500;
+    car.add(rotateHandle);
+
+    // ---------- Arrow primitive ----------
+    function makeArrow(colorCss) {
+      const group = new THREE.Group();
+      group.renderOrder = 1000;
+
+      const c = new THREE.Color(colorCss);
+      const shaftMat = new THREE.MeshBasicMaterial({ color: c, depthTest: false });
+      const headMat  = new THREE.MeshBasicMaterial({ color: c, depthTest: false });
+
+      const shaft = new THREE.Mesh(new THREE.PlaneGeometry(1, 0.14), shaftMat);
+      const head = new THREE.Mesh(new THREE.BufferGeometry(), headMat);
+      const verts = new Float32Array([
+        0, 0, 0,
+        -0.26,  0.36, 0,
+        -0.26, -0.36, 0
+      ]);
+      head.geometry.setAttribute("position", new THREE.BufferAttribute(verts, 3));
+      head.geometry.computeVertexNormals();
+
+      group.add(shaft, head);
+
+      group.userData = {
+        shaft, head,
+        tail: new THREE.Vector3(),
+        headPt: new THREE.Vector3()
+      };
+
+      group.userData.setEndpoints = (tail, headPt) => {
+        group.userData.tail.copy(tail);
+        group.userData.headPt.copy(headPt);
+
+        const dx = headPt.x - tail.x;
+        const dy = headPt.y - tail.y;
+        const len = Math.hypot(dx, dy);
+        const safeLen = Math.max(len, 1e-4);
+        const angle = Math.atan2(dy, dx);
+
+        group.position.set(tail.x, tail.y, 2.0);
+        group.rotation.set(0, 0, angle);
+
+        const headSize = 0.26;
+        const shaftLen = Math.max(0, safeLen - headSize);
+        shaft.scale.set(shaftLen, 1, 1);
+        shaft.position.set(shaftLen/2, 0, 0.0);
+
+        head.position.set(safeLen, 0, 0.01);
+        group.visible = (len > 1e-3);
+      };
+
+      return group;
+    }
+
+    const headwindArrow = makeArrow("#990000");
+    const truewindArrow = makeArrow("#BF9000");
+    const apparentArrow = makeArrow("#E69138");
+    scene.add(headwindArrow, truewindArrow, apparentArrow);
+
+    // Labels (collision placed)
+    const lblHeadwind = makeTextSprite("Headwind", "#990000");
+    const lblTrue     = makeTextSprite("True wind", "#BF9000");
+    const lblApp      = makeTextSprite("Apparent wind", "#E69138");
+    lblHeadwind.position.z = 3.2;
+    lblTrue.position.z = 3.2;
+    lblApp.position.z = 3.2;
+    scene.add(lblHeadwind, lblTrue, lblApp);
+
+    // True-wind tail handle
+    const windHandle = new THREE.Mesh(
+      new THREE.CircleGeometry(HANDLE_R, 28),
+      new THREE.MeshBasicMaterial({ color: 0xffffff, depthTest: false })
+    );
+    // Match on-screen size of the car handle (car is uniformly scaled)
+    windHandle.scale.setScalar(car.scale.x);
+    windHandle.position.z = 3.0;
+    windHandle.renderOrder = 2000;
+    scene.add(windHandle);
+
+    // ---------- Leaves (much bigger; ~tree trunk size) ----------
+    const leafTex = makeLeafTexture();
+    const LEAF_COUNT = 220;
+    const leafPositions = new Float32Array(LEAF_COUNT * 3);
+    const leafSpeeds = new Float32Array(LEAF_COUNT);
+    const leafDrift = new Float32Array(LEAF_COUNT);
+
+    function initLeaves() {
+      const halfW = (camera.right - camera.left) / 2;
+      const halfH = (camera.top - camera.bottom) / 2;
+      for (let i = 0; i < LEAF_COUNT; i++) {
+        const ix = i * 3;
+        leafPositions[ix + 0] = (Math.random() * (halfW * 2)) - halfW;
+        leafPositions[ix + 1] = (Math.random() * (halfH * 2)) - halfH;
+        leafPositions[ix + 2] = 0.6;
+        leafSpeeds[i] = 1.0;
+        leafDrift[i] = Math.random() * 10;
+      }
+    }
+
+    const leafGeom = new THREE.BufferGeometry();
+    leafGeom.setAttribute("position", new THREE.BufferAttribute(leafPositions, 3));
+
+    const leafMat = new THREE.PointsMaterial({
+      size: 20, // was ~0.26
+      map: leafTex,
+      transparent: true,
+      depthTest: false,
+      opacity: 0.88
+    });
+
+    const leaves = new THREE.Points(leafGeom, leafMat);
+    leaves.position.z = 0.6;
+    leaves.renderOrder = 500;
+    scene.add(leaves);
+
+    initLeaves();
+    const leavesBox = document.getElementById("leaves");
+    leaves.visible = leavesBox.checked;
+    leavesBox.addEventListener("change", () => { leaves.visible = leavesBox.checked; });
+
+    // ---------- UI ----------
+    let speed = 0;
+    let heading = 0;
+
+    const speedEl = document.getElementById("speed");
+    const spdTxt  = document.getElementById("spd");
+    
+    const playPauseBtn = document.getElementById("playPause");
+    let playing = true;
+    playPauseBtn.addEventListener("click", () => {
+      playing = !playing;
+      playPauseBtn.textContent = playing ? "Pause" : "Play";
+    });
+speedEl.addEventListener("input", () => {
+      speed = parseFloat(speedEl.value);
+      spdTxt.textContent = `${speed.toFixed(1)} mph`;
+    });
+
+    const SPEED_SCALE = 0.22;
+    // ---------- Mini dials ----------
+    const dialTrue = document.getElementById("dialTrue").getContext("2d");
+    const dialApp  = document.getElementById("dialApp").getContext("2d");
+    const dialHead = document.getElementById("dialHead").getContext("2d");
+    const dialSpeed = document.getElementById("dialSpeed").getContext("2d");
+
+    function drawDial(ctx, vx, vy, maxMag, color, shaftPx, ringColor="rgba(230,237,243,.22)") {
+      const w = ctx.canvas.width, h = ctx.canvas.height;
+      const cx = w/2, cy = h/2;
+      ctx.clearRect(0,0,w,h);
+
+      // dial background
+      ctx.fillStyle = "rgba(10,15,20,.70)";
+      ctx.beginPath(); ctx.arc(cx,cy, w*0.48, 0, Math.PI*2); ctx.fill();
+
+      // ring
+      ctx.strokeStyle = ringColor;
+      ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(cx,cy, w*0.48, 0, Math.PI*2); ctx.stroke();
+
+      // crosshair
+      ctx.strokeStyle = "rgba(230,237,243,.10)";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(cx, cy - w*0.40); ctx.lineTo(cx, cy + w*0.40);
+      ctx.moveTo(cx - w*0.40, cy); ctx.lineTo(cx + w*0.40, cy);
+      ctx.stroke();
+
+      const mag = Math.hypot(vx, vy);
+      if (mag < 1e-6) return;
+
+      const r = w*0.40;
+      const len = Math.min(1, mag / Math.max(1e-6, maxMag)) * r;
+      const ux = vx / mag, uy = vy / mag;
+
+      const x2 = cx + ux * len;
+      const y2 = cy - uy * len; // screen y down, world y up
+
+      // shaft
+      ctx.strokeStyle = color;
+      const lw = Math.max(6, Math.round(shaftPx * 1.25));
+      ctx.lineWidth = lw;
+      ctx.lineCap = "round";
+      ctx.beginPath();
+      ctx.moveTo(cx, cy);
+      const dx = ux;
+      const dy = -uy;
+      const back = lw * 0.55;
+      const x2s = x2 - dx * back;
+      const y2s = y2 - dy * back;
+      ctx.lineTo(x2s, y2s);
+      ctx.stroke();
+
+      // head
+      const head = Math.max(10, lw * 2.2);
+      const ang = Math.atan2(-(uy), ux); // screen angle
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.moveTo(x2, y2);
+      ctx.lineTo(x2 - head*Math.cos(ang-0.55), y2 - head*Math.sin(ang-0.55));
+      ctx.lineTo(x2 - head*Math.cos(ang+0.55), y2 - head*Math.sin(ang+0.55));
+      ctx.closePath();
+      ctx.fill();
+    }
+
+    function updateDials() {
+      // scene-space vectors
+      const trueVx = TW.x, trueVy = TW.y;
+      const v = speed * SPEED_SCALE;
+      const fx = Math.cos(heading), fy = Math.sin(heading);
+      const headVx = -fx * v, headVy = -fy * v;
+      const appVx = trueVx + headVx, appVy = trueVy + headVy;
+
+      // fixed scales (scene units)
+      const windMax = 9.0;
+      const speedMax = 30 * SPEED_SCALE;
+
+      // match on-screen thickness of the main arrow shafts (0.14 world units tall)
+      const pxPerWorldY = renderer.domElement.height / Math.max(1e-6, (camera.top - camera.bottom));
+      const shaftPx = 0.14 * pxPerWorldY;
+
+      drawDial(dialTrue, trueVx, trueVy, windMax, "#BF9000", shaftPx);
+      drawDial(dialApp,  appVx,  appVy,  windMax, "#E69138", shaftPx);
+      drawDial(dialHead, headVx, headVy, windMax, "#990000", shaftPx);
+      drawDial(dialSpeed, fx * v, fy * v, windMax, "rgba(230,237,243,.92)", shaftPx);
+    }
+
+
+    // O hood, P headwind tail, Q true tail (computed), TW true-wind vector (world frame, invariant unless user drags it)
+    const O = new THREE.Vector2(0, 0);
+    const P = new THREE.Vector2(0, 0);
+    const Q = new THREE.Vector2(-1.92, 1.44);
+    const TW = new THREE.Vector2(P.x - Q.x, P.y - Q.y);
+    windHandle.position.set(Q.x, Q.y, 3.0);
+
+    // ---------- Interaction ----------
+    const raycaster = new THREE.Raycaster();
+    const mouseNDC = new THREE.Vector2();
+    const dragPlane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
+    let dragging = false;
+    let dragMode = null; // "wind" | "rotate"
+    let dragOffset = new THREE.Vector3();
+    let rotateStartAngle = 0;
+    let rotateStartHeading = 0;
+
+    const wrapAngle = (a) => Math.atan2(Math.sin(a), Math.cos(a));
+
+    function setMouseFromEvent(e) {
+      const rect = renderer.domElement.getBoundingClientRect();
+      mouseNDC.set(
+        ((e.clientX - rect.left) / rect.width) * 2 - 1,
+        -(((e.clientY - rect.top) / rect.height) * 2 - 1)
+      );
+    }
+    function intersectPlane(e, outVec3) {
+      setMouseFromEvent(e);
+      raycaster.setFromCamera(mouseNDC, camera);
+      return raycaster.ray.intersectPlane(dragPlane, outVec3);
+    }
+
+    renderer.domElement.addEventListener("pointerdown", (e) => {
+      setMouseFromEvent(e);
+      raycaster.setFromCamera(mouseNDC, camera);
+
+      const hitsWind = raycaster.intersectObject(windHandle, false);
+      if (hitsWind.length) {
+        dragging = true; dragMode = "wind";
+        renderer.domElement.setPointerCapture(e.pointerId);
+        const hitPt = hitsWind[0].point.clone();
+        dragOffset.copy(windHandle.position).sub(hitPt);
+        return;
+      }
+
+      const hitsRotate = raycaster.intersectObject(rotateHandle, true);
+      if (hitsRotate.length) {
+        dragging = true; dragMode = "rotate";
+        renderer.domElement.setPointerCapture(e.pointerId);
+        dragOffset.set(0,0,0);
+        const hitPt = hitsRotate[0].point;
+        rotateStartAngle = Math.atan2(hitPt.y, hitPt.x);
+        rotateStartHeading = heading;
+        return;
+      }
+    });
+
+    renderer.domElement.addEventListener("pointermove", (e) => {
+      if (!dragging) return;
+      const pt = new THREE.Vector3();
+      if (!intersectPlane(e, pt)) return;
+
+      const halfW = (camera.right - camera.left) / 2;
+      const halfH = (camera.top - camera.bottom) / 2;
+
+      if (dragMode === "wind") {
+        pt.add(dragOffset);
+	      const qx = clamp(pt.x, -halfW + 0.6, halfW - 0.6);
+	      const qy = clamp(pt.y, -halfH + 0.6, halfH - 0.6);
+	      // User drags the true-wind tail point Q; store invariant true-wind vector TW = P - Q.
+	      TW.set(P.x - qx, P.y - qy);
+      } else if (dragMode === "rotate") {
+        const ang = Math.atan2(pt.y, pt.x);
+        heading = wrapAngle(rotateStartHeading + (ang - rotateStartAngle));
+      }
+    });
+
+    renderer.domElement.addEventListener("pointerup", (e) => {
+      if (!dragging) return;
+      dragging = false; dragMode = null;
+      renderer.domElement.releasePointerCapture(e.pointerId);
+    });
+
+    // ---------- Label collision placement ----------
+    function worldToScreenPx(v3) {
+      const w = renderer.domElement.width;
+      const h = renderer.domElement.height;
+      const p = v3.clone().project(camera);
+      return { x: (p.x * 0.5 + 0.5) * w, y: (-p.y * 0.5 + 0.5) * h };
+    }
+
+    function labelRectPx(label, worldPos) {
+      const wPx = renderer.domElement.width;
+      const hPx = renderer.domElement.height;
+      const pxPerWorldX = wPx / (camera.right - camera.left);
+      const pxPerWorldY = hPx / (camera.top - camera.bottom);
+
+      const s = worldToScreenPx(worldPos);
+      const rw = label.scale.x * pxPerWorldX;
+      const rh = label.scale.y * pxPerWorldY;
+      return { x: s.x - rw/2, y: s.y - rh/2, w: rw, h: rh };
+    }
+
+    function rectsOverlap(a, b) {
+      return !(a.x + a.w <= b.x || b.x + b.w <= a.x || a.y + a.h <= b.y || b.y + b.h <= a.y);
+    }
+
+    function pointInTri(p, a, b, c) {
+      const v0x = c.x - a.x, v0y = c.y - a.y;
+      const v1x = b.x - a.x, v1y = b.y - a.y;
+      const v2x = p.x - a.x, v2y = p.y - a.y;
+      const dot00 = v0x*v0x + v0y*v0y;
+      const dot01 = v0x*v1x + v0y*v1y;
+      const dot02 = v0x*v2x + v0y*v2y;
+      const dot11 = v1x*v1x + v1y*v1y;
+      const dot12 = v1x*v2x + v1y*v2y;
+      const denom = (dot00 * dot11 - dot01 * dot01);
+      if (Math.abs(denom) < 1e-9) return false;
+      const invDen = 1 / denom;
+      const u = (dot11 * dot02 - dot01 * dot12) * invDen;
+      const v = (dot00 * dot12 - dot01 * dot02) * invDen;
+      return (u >= 0) && (v >= 0) && (u + v <= 1);
+    }
+
+    function segsIntersect(a, b, c, d) {
+      const orient = (p, q, r) => (q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x);
+      const onSeg = (p, q, r) => Math.min(p.x, r.x) <= q.x && q.x <= Math.max(p.x, r.x) && Math.min(p.y, r.y) <= q.y && q.y <= Math.max(p.y, r.y);
+      const o1 = orient(a, b, c);
+      const o2 = orient(a, b, d);
+      const o3 = orient(c, d, a);
+      const o4 = orient(c, d, b);
+      if ((o1 === 0 && onSeg(a, c, b)) || (o2 === 0 && onSeg(a, d, b)) || (o3 === 0 && onSeg(c, a, d)) || (o4 === 0 && onSeg(c, b, d))) return true;
+      return (o1 > 0) !== (o2 > 0) && (o3 > 0) !== (o4 > 0);
+    }
+
+    function rectIntersectsTriangle(r, tri) {
+      const a = tri[0], b = tri[1], c = tri[2];
+      const rc = [
+        { x: r.x,       y: r.y },
+        { x: r.x + r.w, y: r.y },
+        { x: r.x + r.w, y: r.y + r.h },
+        { x: r.x,       y: r.y + r.h },
+      ];
+
+      // rect corner in triangle
+      for (const p of rc) if (pointInTri(p, a, b, c)) return true;
+
+      // tri vertex in rect
+      const inRect = (p) => (p.x >= r.x && p.x <= r.x + r.w && p.y >= r.y && p.y <= r.y + r.h);
+      if (inRect(a) || inRect(b) || inRect(c)) return true;
+
+      // edge intersection
+      const re = [[rc[0], rc[1]], [rc[1], rc[2]], [rc[2], rc[3]], [rc[3], rc[0]]];
+      const te = [[a,b], [b,c], [c,a]];
+      for (const [p,q] of re) for (const [u,v] of te) if (segsIntersect(p,q,u,v)) return true;
+
+      return false;
+    }
+
+    function isRectInBounds(r, marginPx) {
+      const w = renderer.domElement.width, h = renderer.domElement.height;
+      return (r.x >= marginPx && r.y >= marginPx && (r.x + r.w) <= (w - marginPx) && (r.y + r.h) <= (h - marginPx));
+    }
+
+    function buildCandidates(tail, head, baseOffset) {
+      const v = new THREE.Vector2(head.x - tail.x, head.y - tail.y);
+      const len = v.length();
+      if (len < 1e-4) return [];
+      v.multiplyScalar(1 / len);
+      const n = new THREE.Vector2(-v.y, v.x);
+
+      const ts = [0.5, 0.66, 0.34];
+      const offs = [baseOffset, baseOffset * 1.35, baseOffset * 2.20];
+
+      const candidates = [];
+      for (const t of ts) {
+        const ax = tail.x + (head.x - tail.x) * t;
+        const ay = tail.y + (head.y - tail.y) * t;
+        for (const side of [1, -1]) {
+          for (const o of offs) {
+            candidates.push(new THREE.Vector3(ax + n.x * o * side, ay + n.y * o * side, 3.2));
+          }
+        }
+      }
+      return candidates;
+    }
+
+    function placeLabelsGreedy(items) {
+      const placedRects = [];
+      for (const it of items) {
+        const { label, tailV3, headV3, baseOffset } = it;
+        if (!label.visible) continue;
+
+        const triWorld = it.triWorld; // { a,b,c, centroid }
+        const triPx = it.triPx;
+
+        // edge-outward preference: pick candidate side that points away from triangle centroid
+        let preferredSide = 0;
+        if (triWorld) {
+          const midx = 0.5 * (tailV3.x + headV3.x);
+          const midy = 0.5 * (tailV3.y + headV3.y);
+          const vx = headV3.x - tailV3.x;
+          const vy = headV3.y - tailV3.y;
+          const vlen = Math.hypot(vx, vy);
+          if (vlen > 1e-5) {
+            const nx = -vy / vlen;
+            const ny =  vx / vlen;
+            const toCx = triWorld.centroid.x - midx;
+            const toCy = triWorld.centroid.y - midy;
+            const d = toCx * nx + toCy * ny;
+            preferredSide = (d > 0) ? -1 : 1;
+          }
+        }
+
+        const candidates = buildCandidates(tailV3, headV3, baseOffset);
+
+        const last = label.userData.lastChoice ?? 0;
+        const ordered = [];
+        if (candidates.length) {
+          const clampedLast = Math.min(last, candidates.length - 1);
+          ordered.push({ idx: clampedLast, pos: candidates[clampedLast] });
+          for (let i = 0; i < candidates.length; i++) if (i !== clampedLast) ordered.push({ idx: i, pos: candidates[i] });
+        }
+
+        let chosen = null, chosenRect = null;
+        let bestScore = Infinity, bestFallback = null, bestFallbackRect = null;
+        const margin = 12;
+
+        for (const cand of ordered) {
+          const r = labelRectPx(label, cand.pos);
+          const inBounds = isRectInBounds(r, margin);
+
+          let overlaps = 0;
+          for (const pr of placedRects) if (rectsOverlap(r, pr)) overlaps++;
+
+          const hitsTri = (triPx && rectIntersectsTriangle(r, triPx)) ? 1 : 0;
+
+          // outward/inward penalty (soft): only matters if we have a preference
+          let inwardPenalty = 0;
+          if (preferredSide !== 0) {
+            const midx = 0.5 * (tailV3.x + headV3.x);
+            const midy = 0.5 * (tailV3.y + headV3.y);
+            const vx = headV3.x - tailV3.x;
+            const vy = headV3.y - tailV3.y;
+            const vlen = Math.hypot(vx, vy);
+            if (vlen > 1e-5) {
+              const nx = -vy / vlen;
+              const ny =  vx / vlen;
+              const side = ((cand.pos.x - midx) * nx + (cand.pos.y - midy) * ny) >= 0 ? 1 : -1;
+              if (side !== preferredSide) inwardPenalty = 80;
+            }
+          }
+
+          if (inBounds && overlaps === 0 && hitsTri === 0) { chosen = cand; chosenRect = r; break; }
+
+          const score = overlaps * 1000 + (inBounds ? 0 : 200) + hitsTri * 1000000 + inwardPenalty;
+          if (score < bestScore) { bestScore = score; bestFallback = cand; bestFallbackRect = r; }
+        }
+
+        if (!chosen) { chosen = bestFallback; chosenRect = bestFallbackRect; }
+        if (chosen) {
+          label.position.copy(chosen.pos);
+          label.userData.lastChoice = chosen.idx;
+          placedRects.push(chosenRect);
+        }
+      }
+    }
+
+    // ---------- Vector geometry ----------
+    function hoodPointWorld(outVec2) {
+      const hoodLocal = new THREE.Vector2(0, 0);
+      const c = Math.cos(heading), s = Math.sin(heading);
+      outVec2.set(hoodLocal.x * c - hoodLocal.y * s, hoodLocal.x * s + hoodLocal.y * c);
+      return outVec2;
+    }
+
+    function updateVectors() {
+      car.rotation.z = heading;
+      scenery.rotation.z = heading;
+
+      const hood = hoodPointWorld(O);
+      const fx = Math.cos(heading), fy = Math.sin(heading);
+
+      P.set(hood.x + fx * (speed * SPEED_SCALE), hood.y + fy * (speed * SPEED_SCALE));
+
+	      // Keep true wind invariant in world frame: store TW = P - Q, so Q follows P by translation.
+	      Q.set(P.x - TW.x, P.y - TW.y);
+
+      headwindArrow.userData.setEndpoints(
+        new THREE.Vector3(P.x, P.y, 0),
+        new THREE.Vector3(O.x, O.y, 0)
+      );
+	      truewindArrow.userData.setEndpoints(
+	        new THREE.Vector3(Q.x, Q.y, 0),
+	        new THREE.Vector3(P.x, P.y, 0)
+	      );
+      apparentArrow.userData.setEndpoints(
+        new THREE.Vector3(Q.x, Q.y, 0),
+        new THREE.Vector3(O.x, O.y, 0)
+      );
+
+      // Hide headwind label at zero speed (the arrow is length ~0 and would otherwise leave a stale label)
+      lblHeadwind.visible = speed > 1e-3;
+
+      // Triangle (screen-space) for label rejection
+      const triWorld = {
+        a: new THREE.Vector2(O.x, O.y),
+        b: new THREE.Vector2(P.x, P.y),
+        c: new THREE.Vector2(Q.x, Q.y),
+        centroid: new THREE.Vector2((O.x + P.x + Q.x) / 3, (O.y + P.y + Q.y) / 3)
+      };
+      const triPx = [
+        worldToScreenPx(new THREE.Vector3(O.x, O.y, 0)),
+        worldToScreenPx(new THREE.Vector3(P.x, P.y, 0)),
+        worldToScreenPx(new THREE.Vector3(Q.x, Q.y, 0)),
+      ];
+
+      placeLabelsGreedy([
+        { label: lblTrue,     tailV3: truewindArrow.userData.tail,   headV3: truewindArrow.userData.headPt,   baseOffset: 0.85, triWorld, triPx },
+        { label: lblApp,      tailV3: apparentArrow.userData.tail,   headV3: apparentArrow.userData.headPt,   baseOffset: 0.85, triWorld, triPx },
+        { label: lblHeadwind, tailV3: headwindArrow.userData.tail,   headV3: headwindArrow.userData.headPt,   baseOffset: 0.85, triWorld, triPx },
+      ]);
+
+      windHandle.position.set(Q.x, Q.y, 3.0);
+    }
+
+    // ---------- Animation ----------
+    let lastT = performance.now();
+    function animate(t) {
+      const rawDt = Math.min(0.05, (t - lastT) / 1000);
+      lastT = t;
+      const dt = playing ? rawDt : 0;
+
+      updateVectors();
+      updateDials();
+
+      // Trees stay north-up (no rotation), but translate opposite car motion direction
+      const v = speed * SPEED_SCALE;
+      const fx = Math.cos(heading), fy = Math.sin(heading);
+
+      const halfW = (camera.right - camera.left) / 2;
+      const halfH = (camera.top - camera.bottom) / 2;
+      const m = 1.2;
+
+      for (const tr of trees) {
+        tr.position.x -= fx * v * dt;
+        tr.position.y -= fy * v * dt;
+
+        // axis-aligned wrap (simple, stable)
+        if (tr.position.x < -halfW - m) tr.position.x =  halfW + m;
+        if (tr.position.x >  halfW + m) tr.position.x = -halfW - m;
+        if (tr.position.y < -halfH - m) tr.position.y =  halfH + m;
+        if (tr.position.y >  halfH + m) tr.position.y = -halfH - m;
+      }
+
+      // Leaves blow with apparent wind (Q -> O) in the car frame
+      if (leaves.visible) {
+        const awx = O.x - Q.x;
+        const awy = O.y - Q.y;
+        const awLen = Math.hypot(awx, awy);
+        const inv = awLen > 1e-4 ? (1 / awLen) : 0;
+        const dirX = awx * inv;
+        const dirY = awy * inv;
+
+        const base = awLen * 0.62;
+
+        const posAttr = leafGeom.getAttribute("position");
+        const mm = 1.0;
+        const minX = -halfW - mm, maxX = halfW + mm, spanX = (maxX - minX);
+        const minY = -halfH - mm, maxY = halfH + mm, spanY = (maxY - minY);
+        for (let i = 0; i < LEAF_COUNT; i++) {
+          const ix = i * 3;
+
+          const phase = (t * 0.001) + leafDrift[i];
+          const perpX = -dirY;
+          const perpY = dirX;
+          const flutter = Math.sin(phase * 2.1) * 0.14;
+
+          leafPositions[ix + 0] += (dirX * base + perpX * flutter) * dt;
+          leafPositions[ix + 1] += (dirY * base + perpY * flutter) * dt;
+
+          // overshoot-preserving torus wrap (avoids piling into lines)
+          let x = leafPositions[ix + 0];
+          let y = leafPositions[ix + 1];
+          if (x < minX || x > maxX) x = ((x - minX) % spanX + spanX) % spanX + minX;
+          if (y < minY || y > maxY) y = ((y - minY) % spanY + spanY) % spanY + minY;
+          leafPositions[ix + 0] = x;
+          leafPositions[ix + 1] = y;
+        }
+
+posAttr.needsUpdate = true;
+      }
+      renderer.render(scene, camera);
+      requestAnimationFrame(animate);
+    }
+    requestAnimationFrame(animate);
+
+    // init UI display
+    spdTxt.textContent = `${parseFloat(speedEl.value).toFixed(1)} mph`;
+    updateDials();
+  </script>
+</body>
+</html>

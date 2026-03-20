@@ -1,0 +1,1241 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Sailing Outline and Wind Vector</title>
+  <style>
+    :root {
+      --wind-color: #E69138;
+      --sail-color: #163243;
+      --debug-bg: rgba(255, 255, 255, 0.92);
+      --label-width: 220px;
+      --instruction-font-size: 26px;
+      --wind-label-font-size: 28px;
+    }
+
+    html, body {
+      margin: 0;
+      height: 100%;
+      overflow: hidden;
+      background: #fff;
+      font-family: Arial, Helvetica, sans-serif;
+    }
+
+    canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+      cursor: default;
+    }
+
+    .wind-label {
+      position: fixed;
+      left: 0;
+      top: 0;
+      width: var(--label-width);
+      color: var(--wind-color);
+      font-size: var(--wind-label-font-size);
+      font-weight: 700;
+      white-space: nowrap;
+      pointer-events: none;
+      user-select: none;
+      transform-origin: 0 0;
+    }
+
+    .flow-label {
+      position: fixed;
+      left: 0;
+      top: 0;
+      width: var(--label-width);
+      color: #f6cfa3;
+      font-size: 24px;
+      font-weight: 700;
+      white-space: nowrap;
+      pointer-events: none;
+      user-select: none;
+      transform-origin: 0 0;
+      display: none;
+    }
+
+    .chord-report {
+      position: fixed;
+      right: 18px;
+      top: 64px;
+      color: #000;
+      font-size: 22px;
+      line-height: 1.35;
+      background: var(--debug-bg);
+      padding: 10px 14px;
+      border-radius: 12px;
+      user-select: none;
+      pointer-events: none;
+    }
+
+    .chord-report.is-hidden {
+      display: none;
+    }
+
+    .debug-toggle {
+      position: fixed;
+      right: 18px;
+      top: 14px;
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      color: #000;
+      font-size: 20px;
+      font-weight: 700;
+      background: var(--debug-bg);
+      padding: 10px 14px;
+      border-radius: 12px;
+      user-select: none;
+    }
+
+    .debug-toggle input {
+      width: 18px;
+      height: 18px;
+      margin: 0;
+    }
+
+    .debug-option {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-top: 12px;
+      font-size: 18px;
+      font-weight: 700;
+      pointer-events: auto;
+    }
+
+    .debug-option input {
+      width: 18px;
+      height: 18px;
+      margin: 0;
+    }
+
+    .tack-status {
+      position: fixed;
+      left: 18px;
+      top: 14px;
+      color: #000;
+      font-size: 28px;
+      font-weight: 800;
+      background: rgba(255, 255, 255, 0.92);
+      padding: 10px 14px;
+      border-radius: 12px;
+      user-select: none;
+      pointer-events: none;
+      letter-spacing: 0.04em;
+    }
+
+    .drag-mode-warning {
+      position: fixed;
+      left: 18px;
+      bottom: 78px;
+      color: #000;
+      font-size: 28px;
+      font-weight: 800;
+      background: rgba(255, 255, 255, 0.92);
+      padding: 10px 14px;
+      border-radius: 12px;
+      user-select: none;
+      pointer-events: none;
+      letter-spacing: 0.04em;
+      display: none;
+    }
+
+    .drag-mode-warning.is-visible {
+      display: block;
+    }
+  </style>
+</head>
+<body>
+  <div class="wind-label">Apparent wind</div>
+  <div class="flow-label">Exit flow</div>
+  <label class="debug-toggle"><input type="checkbox" class="debug-checkbox" /> Debug</label>
+  <div class="chord-report is-hidden">
+    <div class="boat-to-wind-angle">Boat to Apparent Wind: 0.0°</div>
+    <div style="margin-top:8px;">Chord angles</div>
+    <div class="outer-chord-angle">Aft sail: 0.0° to boat, 0.0° to Apparent Wind</div>
+    <div class="inner-chord-angle">Forward sail: 0.0° to boat, 0.0° to Apparent Wind</div>
+    <div style="margin-top:8px;">Leading-edge angles</div>
+    <div class="outer-leading-angle">Aft sail: 0.0° to boat, 0.0° to Apparent Wind</div>
+    <div class="inner-leading-angle">Forward sail: 0.0° to boat, 0.0° to Apparent Wind</div>
+    <label class="debug-option"><input type="checkbox" class="guides-checkbox" /> Show guides</label>
+    <label class="debug-option"><input type="checkbox" class="dashed-lines-checkbox" /> Show dashed lines</label>
+  </div>
+  <div class="drag-mode-warning">DRAG MODE</div>
+  <div class="tack-status">PORT</div>
+
+  <script type="module">
+    import * as THREE from "https://unpkg.com/three@0.160.0/build/three.module.js";
+
+    const CONFIG = {
+      viewHalfHeight: 5,
+      hullStrokeWidth: 0.085,
+      sailStrokeWidth: 0.035,
+      sailColor: 0x163243,
+      luffHighlightColor: 0xff2020,
+      fullLuffColor: 0xff2020,
+      ringOpacity: 0.18,
+      outerEllipse: { radialOffsetFromInner: 2.19, width: 0.05 },
+      innerEllipse: { a: 2.61, b: 1.53, width: 0.04 },
+      arrow: {
+        shaftWidth: 0.08,
+        headLength: 0.36,
+        headWidth: 0.22,
+        color: 0xE69138,
+      },
+      sailFlowArrow: {
+        shaftWidth: 0.08,
+        headLength: 0.36,
+        headWidth: 0.22,
+        color: 0xf6cfa3,
+      },
+      leadingEdgeGuideLength: 0.52,
+      maxChordAngleToBoatDeg: 85,
+      luffingAmplitude: 0.10,
+      luffingWaves: 7,
+      worldSnapAngleDeg: 6,
+      boatSnapAngleDeg: 2,
+      windSnapAngleDeg: 1,
+      snapIncrementDeg: 90,
+      boatSnapIncrementDeg: 45,
+      windSnapIncrementDegs: [30, 45],
+      handleRadius: 0.13,
+      labelWidth: 220,
+      labelOffsetX: 12,
+      labelOffsetBelow: 16,
+      labelOffsetAbove: -36,
+      hull: {
+        segmentsTop: 40,
+        segmentsBow: 16,
+        bowTop: [-2.35, 0.45],
+        bowBottom: [-2.35, -0.45],
+        sternTop: [1.95, 0.58],
+        sternBottom: [1.95, -0.58],
+        topCtrl1: [-1.35, 1.02],
+        topCtrl2: [0.75, 0.98],
+        bottomCtrl1: [0.72, -0.98],
+        bottomCtrl2: [-1.42, -0.98],
+        bowCtrl1: [-2.70, -0.26],
+        bowCtrl2: [-2.70, 0.26],
+        worldHandle: [0, -4.15],
+        boatHandle: [1.85, 0],
+      },
+      sails: {
+        outer: {
+          luffX: -0.31,
+          chordLength: 2.05,
+          draftDepth: 0.356,
+          draftPosition: 0.30,
+          steps: 44,
+        },
+        inner: {
+          luffX: -2.5, // edit this number to move the forward sail fore/aft
+          chordLength: 2.05,
+          draftDepth: 0.356,
+          draftPosition: 0.30,
+          steps: 44,
+        },
+      },
+    };
+
+    CONFIG.ironsLuffingChordCapDeg = THREE.MathUtils.radToDeg(
+      Math.atan2(
+        CONFIG.sails.outer.draftDepth,
+        (1 - CONFIG.sails.outer.draftPosition) * CONFIG.sails.outer.chordLength
+      )
+    );
+    CONFIG.ironsThresholdDeg = THREE.MathUtils.radToDeg(
+      Math.atan2(
+        CONFIG.sails.outer.draftDepth,
+        CONFIG.sails.outer.draftPosition * CONFIG.sails.outer.chordLength
+      )
+    ) + CONFIG.ironsLuffingChordCapDeg;
+    CONFIG.fullLuffThresholdDeg = CONFIG.ironsThresholdDeg - 10;
+
+    const state = {
+      worldAngle: 0,
+      boatAngle: 0,
+      windAngle: Math.PI / 2,
+      dragMode: null,
+      worldDragOffset: 0,
+      boatDragOffset: 0,
+      windDragOffset: 0,
+    };
+
+    const scratch = {
+      vec2A: new THREE.Vector2(),
+      vec2B: new THREE.Vector2(),
+      vec3A: new THREE.Vector3(),
+      vec3B: new THREE.Vector3(),
+      axisZ: new THREE.Vector3(0, 0, 1),
+      pointerNdc: new THREE.Vector2(),
+      raycaster: new THREE.Raycaster(),
+    };
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    document.body.appendChild(renderer.domElement);
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0xffffff);
+
+    const camera = new THREE.OrthographicCamera(-8, 8, 5, -5, 0.1, 100);
+    camera.position.set(0, 0, 10);
+    camera.lookAt(0, 0, 0);
+
+    const root = new THREE.Group();
+    const boat = new THREE.Group();
+    root.add(boat);
+    scene.add(root);
+
+    const windLabelEl = document.querySelector('.wind-label');
+    const flowLabelEl = document.querySelector('.flow-label');
+    const debugCheckboxEl = document.querySelector('.debug-checkbox');
+    const guidesCheckboxEl = document.querySelector('.guides-checkbox');
+    const dashedLinesCheckboxEl = document.querySelector('.dashed-lines-checkbox');
+    const chordReportEl = document.querySelector('.chord-report');
+    const boatToWindAngleEl = document.querySelector('.boat-to-wind-angle');
+    const outerChordAngleEl = document.querySelector('.outer-chord-angle');
+    const innerChordAngleEl = document.querySelector('.inner-chord-angle');
+    const outerLeadingAngleEl = document.querySelector('.outer-leading-angle');
+    const innerLeadingAngleEl = document.querySelector('.inner-leading-angle');
+    const dragModeWarningEl = document.querySelector('.drag-mode-warning');
+    const tackStatusEl = document.querySelector('.tack-status');
+    const objects = buildSceneObjects();
+
+    wireInteractions();
+    resize();
+    updateAll();
+    runSelfChecks();
+
+    window.addEventListener('resize', () => {
+      resize();
+      updateAll();
+    });
+    debugCheckboxEl.addEventListener('change', updateDebugVisibility);
+    guidesCheckboxEl.addEventListener('change', updateGuideVisibility);
+    dashedLinesCheckboxEl.addEventListener('change', updateDashedLineVisibility);
+    function buildSceneObjects() {
+      const hull = buildClosedStrokeMesh(buildHullPoints(), CONFIG.hullStrokeWidth, 0x000000);
+      boat.add(hull);
+
+      const sails = buildSailObjects();
+      boat.add(sails.group);
+
+      const chords = buildChordObjects();
+      boat.add(chords.group);
+
+      const boatHandle = new THREE.Mesh(
+        new THREE.CircleGeometry(CONFIG.handleRadius, 28),
+        new THREE.MeshBasicMaterial({ color: 0x000000, depthTest: false })
+      );
+      boatHandle.position.set(CONFIG.hull.boatHandle[0], CONFIG.hull.boatHandle[1], 0.1);
+      boat.add(boatHandle);
+
+      const worldHandle = new THREE.Mesh(
+        new THREE.CircleGeometry(CONFIG.handleRadius, 28),
+        new THREE.MeshBasicMaterial({ color: 0x000000, depthTest: false })
+      );
+      worldHandle.position.set(CONFIG.hull.worldHandle[0], CONFIG.hull.worldHandle[1], 0.1);
+      root.add(worldHandle);
+
+      const outerRing = buildGuideRing(CONFIG.outerEllipse, 0x000000);
+      root.add(outerRing);
+
+      const innerRing = buildGuideRing(CONFIG.innerEllipse, 0x000000);
+      root.add(innerRing);
+
+      const windArrow = buildArrow(CONFIG.arrow);
+      windArrow.position.z = 0.1;
+      root.add(windArrow);
+
+      const sailFlowArrow = buildArrow(CONFIG.sailFlowArrow);
+      sailFlowArrow.position.z = 0.09;
+      boat.add(sailFlowArrow);
+
+      const windHandle = new THREE.Mesh(
+        new THREE.CircleGeometry(CONFIG.handleRadius, 28),
+        new THREE.MeshBasicMaterial({ color: CONFIG.arrow.color, depthTest: false })
+      );
+      root.add(windHandle);
+
+      return { hull, sails, chords, boatHandle, worldHandle, outerRing, innerRing, windArrow, sailFlowArrow, windHandle };
+    }
+
+    function buildSailObjects() {
+      const group = new THREE.Group();
+      group.position.z = 0.02;
+      const outerSail = buildOpenStrokeMesh(buildSailPoints(CONFIG.sails.outer), CONFIG.sailStrokeWidth, CONFIG.sailColor);
+      const innerSail = buildOpenStrokeMesh(buildSailPoints(CONFIG.sails.inner), CONFIG.sailStrokeWidth, CONFIG.sailColor);
+      const outerLuffHighlight = buildOpenStrokeMesh([new THREE.Vector2(0, 0), new THREE.Vector2(0.001, 0)], CONFIG.sailStrokeWidth * 1.35, CONFIG.luffHighlightColor);
+      const innerLuffHighlight = buildOpenStrokeMesh([new THREE.Vector2(0, 0), new THREE.Vector2(0.001, 0)], CONFIG.sailStrokeWidth * 1.35, CONFIG.luffHighlightColor);
+      outerLuffHighlight.visible = false;
+      innerLuffHighlight.visible = false;
+      group.add(outerSail, innerSail, outerLuffHighlight, innerLuffHighlight);
+      return { group, outerSail, innerSail, outerLuffHighlight, innerLuffHighlight };
+    }
+
+    function buildChordObjects() {
+      const group = new THREE.Group();
+      group.position.z = 0.03;
+      const chordMaterial = new THREE.LineDashedMaterial({ color: 0x666666, dashSize: 0.14, gapSize: 0.10, depthTest: false });
+      const leadingMaterial = new THREE.LineDashedMaterial({ color: 0x888888, dashSize: 0.10, gapSize: 0.08, depthTest: false });
+      const outerChord = new THREE.Line(new THREE.BufferGeometry(), chordMaterial.clone());
+      const innerChord = new THREE.Line(new THREE.BufferGeometry(), chordMaterial.clone());
+      const outerLeading = new THREE.Line(new THREE.BufferGeometry(), leadingMaterial.clone());
+      const innerLeading = new THREE.Line(new THREE.BufferGeometry(), leadingMaterial.clone());
+      group.add(outerChord, innerChord, outerLeading, innerLeading);
+      return { group, outerChord, innerChord, outerLeading, innerLeading };
+    }
+
+    function updateChordGeometry() {
+      const tack = getTackInfo();
+      boatToWindAngleEl.textContent = `Boat to Apparent Wind: ${reportAngle180(tack.apparentWindBoatDeg).toFixed(1)}°`;
+      const outerChord = getSailChord(CONFIG.sails.outer);
+      const innerChord = getSailChord(CONFIG.sails.inner);
+      const outerLeading = getSailLeadingEdge(CONFIG.sails.outer);
+      const innerLeading = getSailLeadingEdge(CONFIG.sails.inner);
+
+      setChordLine(objects.chords.outerChord, outerChord.luff, outerChord.clew);
+      setChordLine(objects.chords.innerChord, innerChord.luff, innerChord.clew);
+      setChordLine(objects.chords.outerLeading, outerLeading.start, outerLeading.end);
+      setChordLine(objects.chords.innerLeading, innerLeading.start, innerLeading.end);
+
+      objects.chords.outerLeading.visible = tack.mode !== 'irons';
+      objects.chords.innerLeading.visible = tack.mode !== 'irons';
+
+      scene.updateMatrixWorld(true);
+
+      const apparentWind = getRenderedSegmentFromLineEndpoints(getWindArrowEndpointsLocal(), root.matrixWorld);
+      const outerChordRendered = getRenderedSegmentFromObject(objects.chords.outerChord);
+      const innerChordRendered = getRenderedSegmentFromObject(objects.chords.innerChord);
+      const outerLeadingRendered = getRenderedSegmentFromObject(objects.chords.outerLeading);
+      const innerLeadingRendered = getRenderedSegmentFromObject(objects.chords.innerLeading);
+
+      const outerChordBoat = reportAngle180(angleOfSegmentDeg(outerChord.luff, outerChord.clew));
+      const innerChordBoat = reportAngle180(angleOfSegmentDeg(innerChord.luff, innerChord.clew));
+      const outerLeadingBoat = reportAngle180(angleOfSegmentDeg(outerLeading.start, outerLeading.end));
+      const innerLeadingBoat = reportAngle180(angleOfSegmentDeg(innerLeading.start, innerLeading.end));
+
+      const apparentWindWorldDeg = angleOfSegmentDeg(apparentWind.a, apparentWind.b);
+      const outerChordWind = reportAngle180(directedAngleFromWindDeg(angleOfSegmentDeg(outerChordRendered.a, outerChordRendered.b), apparentWindWorldDeg));
+      const innerChordWind = reportAngle180(directedAngleFromWindDeg(angleOfSegmentDeg(innerChordRendered.a, innerChordRendered.b), apparentWindWorldDeg));
+      const outerLeadingWind = reportAngle180(directedAngleFromWindDeg(angleOfSegmentDeg(outerLeadingRendered.a, outerLeadingRendered.b), apparentWindWorldDeg));
+      const innerLeadingWind = reportAngle180(directedAngleFromWindDeg(angleOfSegmentDeg(innerLeadingRendered.a, innerLeadingRendered.b), apparentWindWorldDeg));
+
+      outerChordAngleEl.textContent = `Aft sail: ${outerChordBoat.toFixed(1)}° to boat, ${outerChordWind.toFixed(1)}° to Apparent Wind`;
+      innerChordAngleEl.textContent = `Forward sail: ${innerChordBoat.toFixed(1)}° to boat, ${innerChordWind.toFixed(1)}° to Apparent Wind`;
+      if (tack.mode === 'irons') {
+        outerLeadingAngleEl.textContent = 'Aft sail: luffing in irons';
+        innerLeadingAngleEl.textContent = 'Forward sail: luffing in irons';
+      } else {
+        outerLeadingAngleEl.textContent = `Aft sail: ${outerLeadingBoat.toFixed(1)}° to boat, ${outerLeadingWind.toFixed(1)}° to Apparent Wind`;
+        innerLeadingAngleEl.textContent = `Forward sail: ${innerLeadingBoat.toFixed(1)}° to boat, ${innerLeadingWind.toFixed(1)}° to Apparent Wind`;
+      }
+    }
+
+    function updateTackStatus() {
+      const tack = getTackInfo();
+      const tackLabel = tack.mode === 'port' ? 'PORT TACK' : 'STARBOARD TACK';
+      if (tack.mode === 'irons') {
+        tackStatusEl.textContent = tack.luffMode === 'highlight' ? `PINCHING - ${tackLabel}` : 'IN IRONS';
+        return;
+      }
+
+      const boatToWindDeg = tack.boatToWindDeg;
+
+      if (boatToWindDeg < 50) {
+        tackStatusEl.textContent = `CLOSE HAULED - ${tackLabel}`;
+      } else if (boatToWindDeg < 80) {
+        tackStatusEl.textContent = `CLOSE REACH - ${tackLabel}`;
+      } else if (boatToWindDeg < 100) {
+        tackStatusEl.textContent = `BEAM REACH - ${tackLabel}`;
+      } else if (!isInDragMode()) {
+        tackStatusEl.textContent = `BROAD REACH - ${tackLabel}`;
+      } else if (boatToWindDeg < 175) {
+        tackStatusEl.textContent = `DEEP BROAD REACH - ${tackLabel}`;
+      } else {
+        tackStatusEl.textContent = 'DEAD RUN';
+      }
+    }
+
+    function updateDragModeWarning() {
+      dragModeWarningEl.classList.toggle('is-visible', isInDragMode());
+    }
+
+    function isInDragMode() {
+      const tack = getTackInfo();
+      return tack.boatToWindDeg > 140 || Math.abs(getAutoTrimChordAngleDeg(CONFIG.sails.outer)) >= CONFIG.maxChordAngleToBoatDeg - 1e-9;
+    }
+
+    function setChordLine(line, a, b) {
+      if (line.geometry) line.geometry.dispose();
+      line.geometry = new THREE.BufferGeometry().setFromPoints([
+        new THREE.Vector3(a.x, a.y, 0),
+        new THREE.Vector3(b.x, b.y, 0),
+      ]);
+      line.computeLineDistances();
+    }
+
+    function wireInteractions() {
+      renderer.domElement.addEventListener('pointerdown', onPointerDown);
+      renderer.domElement.addEventListener('pointermove', onPointerMove);
+      renderer.domElement.addEventListener('pointerup', endDrag);
+      renderer.domElement.addEventListener('pointercancel', endDrag);
+    }
+
+    function resize() {
+      const width = window.innerWidth;
+      const height = window.innerHeight;
+      const aspect = width / height;
+      const halfH = CONFIG.viewHalfHeight;
+      const halfW = halfH * aspect;
+
+      renderer.setSize(width, height);
+      camera.left = -halfW;
+      camera.right = halfW;
+      camera.top = halfH;
+      camera.bottom = -halfH;
+      camera.updateProjectionMatrix();
+    }
+
+    function updateAll() {
+      updateWorldTransform();
+      updateWindGeometry();
+      updateSailGeometry();
+      updateSailFlowGeometry();
+      updateChordGeometry();
+      scene.updateMatrixWorld(true);
+      updateWindLabel();
+      updateFlowLabel();
+      updateTackStatus();
+      updateDragModeWarning();
+      updateDebugVisibility();
+      updateGuideVisibility();
+      updateDashedLineVisibility();
+      render();
+    }
+
+    function updateDebugVisibility() {
+      chordReportEl.classList.toggle('is-hidden', !debugCheckboxEl.checked);
+    }
+
+    function updateGuideVisibility() {
+      const visible = guidesCheckboxEl.checked;
+      objects.outerRing.visible = visible;
+      objects.innerRing.visible = visible;
+    }
+
+    function updateDashedLineVisibility() {
+      const visible = dashedLinesCheckboxEl.checked;
+      objects.chords.group.visible = visible;
+    }
+
+    function updateWorldTransform() {
+      root.rotation.z = state.worldAngle;
+      boat.rotation.z = Math.PI + state.boatAngle;
+    }
+
+    function updateWindGeometry() {
+      const tail = guidePoint(CONFIG.outerEllipse, state.windAngle);
+      const tip = guidePoint(CONFIG.innerEllipse, state.windAngle);
+      objects.windArrow.userData.setEndpoints(tail, tip);
+      objects.windHandle.position.copy(tail).setZ(0.2);
+    }
+
+    function updateSailFlowGeometry() {
+      const tack = getTackInfo();
+      const visible = tack.luffMode !== 'full' && !isInDragMode();
+      objects.sailFlowArrow.visible = visible;
+      if (!visible) return;
+      const flow = getSailFlowArrowEndpointsLocal();
+      objects.sailFlowArrow.userData.setEndpoints(flow.tail, flow.tip);
+    }
+
+    function updateWindLabel() {
+      const tail = guidePoint(CONFIG.outerEllipse, state.windAngle);
+      const tip = guidePoint(CONFIG.innerEllipse, state.windAngle);
+      const labelAnchor = scratch.vec3A.copy(tip).lerp(tail, 0.42);
+      const worldAnchor = scratch.vec3B.copy(labelAnchor).applyAxisAngle(scratch.axisZ, state.worldAngle);
+      const screen = worldToScreen(worldAnchor);
+      const layout = getWindLabelLayout(worldAnchor);
+
+      windLabelEl.style.textAlign = layout.alignLeft ? 'left' : 'right';
+      windLabelEl.style.transform = `translate(${screen.x + layout.xOffset}px, ${screen.y + layout.yOffset}px)`;
+    }
+
+    function updateFlowLabel() {
+      if (!objects.sailFlowArrow.visible) {
+        flowLabelEl.style.display = 'none';
+        return;
+      }
+
+      const flow = getSailFlowArrowEndpointsLocal();
+      const labelAnchor = scratch.vec3A.copy(flow.tail).lerp(flow.tip, 0.38).applyAxisAngle(scratch.axisZ, state.worldAngle + Math.PI + state.boatAngle);
+      const screen = worldToScreen(labelAnchor);
+      const layout = getWindLabelLayout(labelAnchor);
+
+      flowLabelEl.style.display = 'block';
+      flowLabelEl.style.textAlign = layout.alignLeft ? 'left' : 'right';
+      flowLabelEl.style.transform = `translate(${screen.x + layout.xOffset}px, ${screen.y + layout.yOffset}px)`;
+    }
+
+    function getWindLabelLayout(worldAnchor) {
+      const isRight = worldAnchor.x >= 0;
+      const isTop = worldAnchor.y >= 0;
+      return {
+        alignLeft: isRight,
+        xOffset: isRight ? CONFIG.labelOffsetX : -(CONFIG.labelWidth + CONFIG.labelOffsetX),
+        yOffset: isTop ? CONFIG.labelOffsetBelow : CONFIG.labelOffsetAbove,
+      };
+    }
+
+    function render() {
+      renderer.render(scene, camera);
+    }
+
+    function onPointerDown(event) {
+      const hits = pick(event);
+      if (!hits.length) return;
+
+      const hit = hits[0].object;
+      const pointWorld = eventToWorld(event);
+
+      if (hit === objects.worldHandle) {
+        state.dragMode = 'world';
+        state.worldDragOffset = state.worldAngle - Math.atan2(pointWorld.y, pointWorld.x);
+      } else if (hit === objects.boatHandle) {
+        state.dragMode = 'boat';
+        state.boatDragOffset = state.boatAngle - worldPointToBoatAngle(pointWorld, state.worldAngle);
+      } else if (hit === objects.windHandle) {
+        state.dragMode = 'wind';
+        state.windDragOffset = state.windAngle - worldPointToGuideAngle(pointWorld, CONFIG.outerEllipse, state.worldAngle);
+      }
+
+      renderer.domElement.setPointerCapture(event.pointerId);
+    }
+
+    function onPointerMove(event) {
+      if (!state.dragMode) return;
+
+      const pointWorld = eventToWorld(event);
+      const rawAngle = Math.atan2(pointWorld.y, pointWorld.x);
+
+      if (state.dragMode === 'world') {
+        const proposedWorldAngle = rawAngle + state.worldDragOffset;
+        state.worldAngle = snapAngleRadians(
+          proposedWorldAngle,
+          THREE.MathUtils.degToRad(CONFIG.worldSnapAngleDeg),
+          THREE.MathUtils.degToRad(CONFIG.snapIncrementDeg)
+        );
+      } else if (state.dragMode === 'boat') {
+        const proposedBoatAngle = worldPointToBoatAngle(pointWorld, state.worldAngle) + state.boatDragOffset;
+        state.boatAngle = snapAngleRadians(
+          proposedBoatAngle,
+          THREE.MathUtils.degToRad(CONFIG.boatSnapAngleDeg),
+          THREE.MathUtils.degToRad(CONFIG.boatSnapIncrementDeg)
+        );
+      } else if (state.dragMode === 'wind') {
+        const proposedWindAngle = worldPointToGuideAngle(pointWorld, CONFIG.outerEllipse, state.worldAngle) + state.windDragOffset;
+        state.windAngle = snapAngleToIncrementsRadians(
+          proposedWindAngle,
+          THREE.MathUtils.degToRad(CONFIG.windSnapAngleDeg),
+          CONFIG.windSnapIncrementDegs.map((deg) => THREE.MathUtils.degToRad(deg))
+        );
+      }
+
+      updateAll();
+    }
+
+    function endDrag(event) {
+      if (!state.dragMode) return;
+      state.dragMode = null;
+      try {
+        renderer.domElement.releasePointerCapture(event.pointerId);
+      } catch {
+        // no-op
+      }
+    }
+
+    function pick(event) {
+      const rect = renderer.domElement.getBoundingClientRect();
+      scratch.pointerNdc.set(
+        ((event.clientX - rect.left) / rect.width) * 2 - 1,
+        -(((event.clientY - rect.top) / rect.height) * 2 - 1)
+      );
+      scratch.raycaster.setFromCamera(scratch.pointerNdc, camera);
+      return scratch.raycaster.intersectObjects([objects.worldHandle, objects.boatHandle, objects.windHandle], true);
+    }
+
+    function eventToWorld(event) {
+      const rect = renderer.domElement.getBoundingClientRect();
+      const x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+      const y = -(((event.clientY - rect.top) / rect.height) * 2 - 1);
+      return new THREE.Vector3(
+        x * (camera.right - camera.left) * 0.5,
+        y * (camera.top - camera.bottom) * 0.5,
+        0
+      );
+    }
+
+    function worldToScreen(worldPoint) {
+      const projected = worldPoint.clone().project(camera);
+      return {
+        x: (projected.x * 0.5 + 0.5) * window.innerWidth,
+        y: (-projected.y * 0.5 + 0.5) * window.innerHeight,
+      };
+    }
+
+    function worldPointToBoatAngle(pointWorld, worldRotation) {
+      const local = pointWorld.clone().applyAxisAngle(scratch.axisZ, -worldRotation);
+      return Math.atan2(local.y, local.x);
+    }
+
+    function worldPointToGuideAngle(pointWorld, guide, rotation) {
+      const local = pointWorld.clone().applyAxisAngle(scratch.axisZ, -rotation);
+      if ('radialOffsetFromInner' in guide) {
+        return Math.atan2(local.y, local.x);
+      }
+      return Math.atan2(local.y / guide.b, local.x / guide.a);
+    }
+
+    function getWindArrowEndpointsLocal() {
+      return {
+        tail: guidePoint(CONFIG.outerEllipse, state.windAngle),
+        tip: guidePoint(CONFIG.innerEllipse, state.windAngle),
+      };
+    }
+
+    function getApparentWindMagnitudeLocal() {
+      const endpoints = getWindArrowEndpointsLocal();
+      return endpoints.tail.distanceTo(endpoints.tip);
+    }
+
+    function getActiveSailPoints(spec) {
+      return getTackInfo().luffMode === 'full' ? buildLuffingSailPoints(spec) : buildSailPoints(spec);
+    }
+
+    function getSailFlowArrowEndpointsLocal() {
+      const points = getActiveSailPoints(CONFIG.sails.outer);
+      const clew = points[points.length - 1].clone();
+      const prev = points[points.length - 2].clone();
+      const tangentDir = clew.clone().sub(prev);
+      if (tangentDir.lengthSq() === 0) tangentDir.set(1, 0);
+      tangentDir.normalize();
+
+      const tailAngle = Math.atan2(clew.y, clew.x);
+      const tail = guidePoint(CONFIG.innerEllipse, tailAngle);
+      const radialDir = new THREE.Vector2(Math.cos(tailAngle), Math.sin(tailAngle));
+      if (tangentDir.dot(radialDir) < 0) tangentDir.multiplyScalar(-1);
+
+      const flowLength = getApparentWindMagnitudeLocal();
+      const tip = new THREE.Vector3(
+        tail.x + tangentDir.x * flowLength,
+        tail.y + tangentDir.y * flowLength,
+        0
+      );
+      return { tail, tip };
+    }
+
+    function getRenderedSegmentFromLineEndpoints(localEndpoints, matrixWorld) {
+      return {
+        a: new THREE.Vector3(localEndpoints.tail.x, localEndpoints.tail.y, 0).applyMatrix4(matrixWorld),
+        b: new THREE.Vector3(localEndpoints.tip.x, localEndpoints.tip.y, 0).applyMatrix4(matrixWorld),
+      };
+    }
+
+    function getRenderedSegmentFromObject(line) {
+      const pos = line.geometry.getAttribute('position');
+      const a = new THREE.Vector3(pos.getX(0), pos.getY(0), pos.getZ(0)).applyMatrix4(line.matrixWorld);
+      const last = pos.count - 1;
+      const b = new THREE.Vector3(pos.getX(last), pos.getY(last), pos.getZ(last)).applyMatrix4(line.matrixWorld);
+      return { a, b };
+    }
+
+    function angleOfSegmentDeg(a, b) {
+      return THREE.MathUtils.radToDeg(Math.atan2(b.y - a.y, b.x - a.x));
+    }
+
+    function undirectedLineAngleBetweenDeg(aDeg, bDeg) {
+      const diff180 = ((aDeg - bDeg + 90) % 180 + 180) % 180 - 90;
+      return Math.abs(diff180);
+    }
+
+    function directedAngleFromWindDeg(lineAngleDeg, windAngleDeg) {
+      return normalizeAngleDeg(lineAngleDeg - windAngleDeg);
+    }
+
+    function normalizeAngleDeg(angleDeg) {
+      return ((angleDeg % 360) + 360) % 360;
+    }
+
+    function normalizeSignedDeg(angleDeg) {
+      return ((angleDeg + 180) % 360 + 360) % 360 - 180;
+    }
+
+    function reportAngle180(angleDeg) {
+      const normalized = normalizeAngleDeg(angleDeg);
+      return normalized <= 180 ? normalized : 360 - normalized;
+    }
+
+    function normalizeAngleRadians(angleRad) {
+      return Math.atan2(Math.sin(angleRad), Math.cos(angleRad));
+    }
+
+    function snapAngleRadians(angleRad, thresholdRad, incrementRad = Math.PI * 2) {
+      const snapped = Math.round(angleRad / incrementRad) * incrementRad;
+      const delta = normalizeAngleRadians(angleRad - snapped);
+      return Math.abs(delta) <= thresholdRad ? snapped : angleRad;
+    }
+
+    function snapAngleToIncrementsRadians(angleRad, thresholdRad, incrementRads) {
+      let bestSnap = angleRad;
+      let bestDelta = Infinity;
+
+      for (const incrementRad of incrementRads) {
+        const snapped = Math.round(angleRad / incrementRad) * incrementRad;
+        const delta = Math.abs(normalizeAngleRadians(angleRad - snapped));
+        if (delta < bestDelta) {
+          bestDelta = delta;
+          bestSnap = snapped;
+        }
+      }
+
+      return bestDelta <= thresholdRad ? bestSnap : angleRad;
+    }
+
+    function ellipsePoint(ellipse, angle) {
+      return new THREE.Vector3(
+        Math.cos(angle) * ellipse.a,
+        Math.sin(angle) * ellipse.b,
+        0
+      );
+    }
+
+    function guidePoint(guide, angle) {
+      if ('radialOffsetFromInner' in guide) {
+        const inner = ellipsePoint(CONFIG.innerEllipse, angle);
+        const radial = new THREE.Vector3(Math.cos(angle), Math.sin(angle), 0);
+        return inner.addScaledVector(radial, guide.radialOffsetFromInner);
+      }
+      return ellipsePoint(guide, angle);
+    }
+
+    function buildHullPoints() {
+      const hull = CONFIG.hull;
+      const points = [];
+      const bowTop = vec2(hull.bowTop);
+      const bowBottom = vec2(hull.bowBottom);
+      const sternTop = vec2(hull.sternTop);
+      const sternBottom = vec2(hull.sternBottom);
+      const topCtrl1 = vec2(hull.topCtrl1);
+      const topCtrl2 = vec2(hull.topCtrl2);
+      const bottomCtrl1 = vec2(hull.bottomCtrl1);
+      const bottomCtrl2 = vec2(hull.bottomCtrl2);
+      const bowCtrl1 = vec2(hull.bowCtrl1);
+      const bowCtrl2 = vec2(hull.bowCtrl2);
+
+      for (let i = 0; i <= hull.segmentsTop; i++) {
+        points.push(cubicPoint(bowTop, topCtrl1, topCtrl2, sternTop, i / hull.segmentsTop));
+      }
+      points.push(sternBottom.clone());
+      for (let i = 1; i <= hull.segmentsTop; i++) {
+        points.push(cubicPoint(sternBottom, bottomCtrl1, bottomCtrl2, bowBottom, i / hull.segmentsTop));
+      }
+      for (let i = 1; i <= hull.segmentsBow; i++) {
+        points.push(cubicPoint(bowBottom, bowCtrl1, bowCtrl2, bowTop, i / hull.segmentsBow));
+      }
+      return points;
+    }
+
+    function getApparentWindAngleWorldDeg() {
+      const renderedWind = getRenderedSegmentFromLineEndpoints(getWindArrowEndpointsLocal(), root.matrixWorld);
+      return angleOfSegmentDeg(renderedWind.a, renderedWind.b);
+    }
+
+    function worldAngleToBoatAngleDeg(worldAngleDeg) {
+      return normalizeAngleDeg(worldAngleDeg - THREE.MathUtils.radToDeg(state.worldAngle + Math.PI + state.boatAngle));
+    }
+
+    function getTackInfo() {
+      const apparentWindBoatDeg = worldAngleToBoatAngleDeg(getApparentWindAngleWorldDeg());
+      const signedWindDeg = ((apparentWindBoatDeg + 180) % 360) - 180;
+      const sailSign = signedWindDeg >= 0 ? 1 : -1;
+      const entryOffsetDeg = THREE.MathUtils.radToDeg(Math.atan2(CONFIG.sails.outer.draftDepth, CONFIG.sails.outer.draftPosition * CONFIG.sails.outer.chordLength));
+      const efficientChordDeg = apparentWindBoatDeg - sailSign * entryOffsetDeg;
+      const efficientChordToBoatDeg = reportAngle180(efficientChordDeg);
+      const boatToWindDeg = reportAngle180(apparentWindBoatDeg);
+      const inIrons = boatToWindDeg <= CONFIG.ironsThresholdDeg;
+
+      if (inIrons) {
+        const luffMode = boatToWindDeg <= CONFIG.fullLuffThresholdDeg ? 'full' : 'highlight';
+        return {
+          mode: 'irons',
+          luffMode,
+          apparentWindBoatDeg,
+          signedWindDeg,
+          sailSign,
+          efficientChordDeg,
+          efficientChordToBoatDeg,
+          boatToWindDeg,
+          luffingChordDeg: sailSign * Math.min(CONFIG.ironsLuffingChordCapDeg, Math.abs(signedWindDeg)),
+        };
+      }
+
+      return {
+        mode: sailSign > 0 ? 'port' : 'starboard',
+        luffMode: 'none',
+        apparentWindBoatDeg,
+        signedWindDeg,
+        sailSign,
+        efficientChordDeg,
+        efficientChordToBoatDeg,
+        boatToWindDeg,
+        luffingChordDeg: null,
+      };
+    }
+
+    function getAutoTrimChordAngleDeg(spec) {
+      const tack = getTackInfo();
+      if (tack.mode === 'irons') {
+        return tack.luffingChordDeg;
+      }
+      const entryOffsetDeg = THREE.MathUtils.radToDeg(Math.atan2(spec.draftDepth, spec.draftPosition * spec.chordLength));
+      const unclamped = tack.apparentWindBoatDeg - tack.sailSign * entryOffsetDeg;
+      const signed = ((unclamped + 180) % 360) - 180;
+      const clamped = THREE.MathUtils.clamp(signed, -CONFIG.maxChordAngleToBoatDeg, CONFIG.maxChordAngleToBoatDeg);
+      return clamped;
+    }
+
+    function getSailChord(spec) {
+      const luff = new THREE.Vector2(spec.luffX, 0);
+      const chordAngle = THREE.MathUtils.degToRad(getAutoTrimChordAngleDeg(spec));
+      const clew = new THREE.Vector2(
+        spec.luffX + Math.cos(chordAngle) * spec.chordLength,
+        Math.sin(chordAngle) * spec.chordLength
+      );
+      const chord = clew.clone().sub(luff);
+      const angleDeg = THREE.MathUtils.radToDeg(Math.atan2(chord.y, chord.x));
+      return { luff, clew, chord, angleDeg };
+    }
+
+    function getSailBezier(spec) {
+      const { luff, clew, chord } = getSailChord(spec);
+      const chordLength = chord.length();
+      const chordDir = chord.clone().normalize();
+      const tack = getTackInfo();
+      const normal = new THREE.Vector2(-chordDir.y, chordDir.x).multiplyScalar(tack.sailSign);
+      const maxDraftPoint = luff.clone()
+        .addScaledVector(chordDir, chordLength * spec.draftPosition)
+        .addScaledVector(normal, spec.draftDepth);
+
+      const ctrl1 = luff.clone().lerp(maxDraftPoint, 0.72);
+      const ctrl2 = maxDraftPoint.clone().lerp(clew, 0.58);
+      return { luff, ctrl1, ctrl2, clew };
+    }
+
+    function getSailLeadingEdge(spec) {
+      const bezier = getSailBezier(spec);
+      const tangent = bezier.ctrl1.clone().sub(bezier.luff).multiplyScalar(3);
+      const angleDeg = THREE.MathUtils.radToDeg(Math.atan2(tangent.y, tangent.x));
+      const end = bezier.luff.clone().add(tangent.clone().normalize().multiplyScalar(CONFIG.leadingEdgeGuideLength));
+      return { start: bezier.luff, end, angleDeg };
+    }
+
+    function buildLuffingSailPoints(spec) {
+      const { luff, clew, chord } = getSailChord(spec);
+      const chordDir = chord.clone().normalize();
+      const tack = getTackInfo();
+      const normal = new THREE.Vector2(-chordDir.y, chordDir.x).multiplyScalar(tack.sailSign);
+      const points = [];
+      const samples = spec.steps;
+      for (let i = 0; i <= samples; i++) {
+        const t = i / samples;
+        const base = luff.clone().lerp(clew, t);
+        const envelope = Math.sin(Math.PI * t);
+        const wave = Math.sin(t * CONFIG.luffingWaves * Math.PI * 2);
+        const offset = normal.clone().multiplyScalar(CONFIG.luffingAmplitude * envelope * wave);
+        points.push(base.add(offset));
+      }
+      return points;
+    }
+
+    function buildSailPoints(spec) {
+      const bezier = getSailBezier(spec);
+      return sampleCubicCurve(bezier.luff, bezier.ctrl1, bezier.ctrl2, bezier.clew, spec.steps);
+    }
+
+    function buildLuffHighlightPoints(spec, sailPoints) {
+      const tack = getTackInfo();
+      if (tack.mode !== 'irons') return [];
+
+      if (tack.boatToWindDeg <= CONFIG.fullLuffThresholdDeg) {
+        return sailPoints.map((p) => p.clone());
+      }
+
+      const windWorldDeg = getApparentWindAngleWorldDeg();
+      const windBoatDeg = normalizeSignedDeg(
+        windWorldDeg - THREE.MathUtils.radToDeg(state.worldAngle + Math.PI + state.boatAngle)
+      );
+
+      const highlight = [sailPoints[0].clone()];
+
+      for (let i = 0; i < sailPoints.length - 1; i++) {
+        const a = sailPoints[i];
+        const b = sailPoints[i + 1];
+        const tangentDeg = angleOfSegmentDeg(a, b);
+        const signedAngleToWind = tack.sailSign * normalizeSignedDeg(windBoatDeg - tangentDeg);
+
+        if (signedAngleToWind <= 0) {
+          highlight.push(b.clone());
+          continue;
+        }
+
+        if (highlight.length === 1) {
+          highlight.push(b.clone());
+        } else {
+          const prevA = sailPoints[Math.max(0, i - 1)];
+          const prevB = a;
+          const prevTangentDeg = angleOfSegmentDeg(prevA, prevB);
+          const prevSigned = tack.sailSign * normalizeSignedDeg(windBoatDeg - prevTangentDeg);
+          const denom = prevSigned - signedAngleToWind;
+          const t = Math.abs(denom) < 1e-9 ? 0 : THREE.MathUtils.clamp(prevSigned / denom, 0, 1);
+          highlight.push(a.clone().lerp(b, t));
+        }
+        break;
+      }
+
+      return highlight.length >= 2 ? highlight : [];
+    }
+
+    function sampleCubicCurve(p0, p1, p2, p3, steps) {
+      const points = [];
+      for (let i = 0; i <= steps; i++) {
+        points.push(cubicPoint(p0, p1, p2, p3, i / steps));
+      }
+      return points;
+    }
+
+    function cubicPoint(p0, p1, p2, p3, t) {
+      const u = 1 - t;
+      const uu = u * u;
+      const tt = t * t;
+      const uuu = uu * u;
+      const ttt = tt * t;
+      return new THREE.Vector2(
+        uuu * p0.x + 3 * uu * t * p1.x + 3 * u * tt * p2.x + ttt * p3.x,
+        uuu * p0.y + 3 * uu * t * p1.y + 3 * u * tt * p2.y + ttt * p3.y
+      );
+    }
+
+    function buildClosedStrokeMesh(points, width, color) {
+      return buildStrokeMesh(points, width, color, true);
+    }
+
+    function buildOpenStrokeMesh(points, width, color) {
+      return buildStrokeMesh(points, width, color, false);
+    }
+
+    function updateOpenStrokeMesh(mesh, points) {
+      mesh.geometry.dispose();
+      mesh.geometry = buildStrokeGeometry(points, mesh.userData.strokeWidth, false);
+    }
+
+    function updateSailGeometry() {
+      const tack = getTackInfo();
+      const useFullLuff = tack.luffMode === 'full';
+      const outerPoints = useFullLuff ? buildLuffingSailPoints(CONFIG.sails.outer) : buildSailPoints(CONFIG.sails.outer);
+      const innerPoints = useFullLuff ? buildLuffingSailPoints(CONFIG.sails.inner) : buildSailPoints(CONFIG.sails.inner);
+      updateOpenStrokeMesh(objects.sails.outerSail, outerPoints);
+      updateOpenStrokeMesh(objects.sails.innerSail, innerPoints);
+      objects.sails.outerSail.material.color.setHex(useFullLuff ? CONFIG.fullLuffColor : CONFIG.sailColor);
+      objects.sails.innerSail.material.color.setHex(useFullLuff ? CONFIG.fullLuffColor : CONFIG.sailColor);
+
+      if (tack.luffMode === 'highlight') {
+        const outerHighlight = buildLuffHighlightPoints(CONFIG.sails.outer, outerPoints);
+        const innerHighlight = buildLuffHighlightPoints(CONFIG.sails.inner, innerPoints);
+        objects.sails.outerLuffHighlight.visible = outerHighlight.length >= 2;
+        objects.sails.innerLuffHighlight.visible = innerHighlight.length >= 2;
+        if (outerHighlight.length >= 2) updateOpenStrokeMesh(objects.sails.outerLuffHighlight, outerHighlight);
+        if (innerHighlight.length >= 2) updateOpenStrokeMesh(objects.sails.innerLuffHighlight, innerHighlight);
+      } else {
+        objects.sails.outerLuffHighlight.visible = false;
+        objects.sails.innerLuffHighlight.visible = false;
+      }
+    }
+
+    function buildStrokeMesh(points, width, color, closed) {
+      const geometry = buildStrokeGeometry(points, width, closed);
+      const material = new THREE.MeshBasicMaterial({ color, depthTest: false, side: THREE.DoubleSide });
+      const mesh = new THREE.Mesh(geometry, material);
+      mesh.userData.strokeWidth = width;
+      mesh.userData.closed = closed;
+      return mesh;
+    }
+
+    function buildStrokeGeometry(points, width, closed) {
+      const positions = [];
+      const indices = [];
+      const halfWidth = width / 2;
+
+      for (let i = 0; i < points.length; i++) {
+        const prev = closed ? points[(i - 1 + points.length) % points.length] : points[Math.max(0, i - 1)];
+        const curr = points[i];
+        const next = closed ? points[(i + 1) % points.length] : points[Math.min(points.length - 1, i + 1)];
+
+        const dirA = scratch.vec2A.copy(curr).sub(prev);
+        const dirB = scratch.vec2B.copy(next).sub(curr);
+        if (dirA.lengthSq() > 0) dirA.normalize();
+        if (dirB.lengthSq() > 0) dirB.normalize();
+
+        const tangent = dirA.clone().add(dirB);
+        if (tangent.lengthSq() === 0) {
+          tangent.set(-(next.y - prev.y), next.x - prev.x);
+        }
+        tangent.normalize();
+
+        const normal = new THREE.Vector2(-tangent.y, tangent.x).normalize();
+        const left = curr.clone().addScaledVector(normal, halfWidth);
+        const right = curr.clone().addScaledVector(normal, -halfWidth);
+        positions.push(left.x, left.y, 0, right.x, right.y, 0);
+      }
+
+      const segmentCount = closed ? points.length : Math.max(0, points.length - 1);
+      for (let i = 0; i < segmentCount; i++) {
+        const a = i * 2;
+        const b = i * 2 + 1;
+        const nextIndex = closed ? (i + 1) % points.length : (i + 1);
+        const c = nextIndex * 2;
+        const d = nextIndex * 2 + 1;
+        indices.push(a, b, c, b, d, c);
+      }
+
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+      geometry.setIndex(indices);
+      geometry.computeVertexNormals();
+      return geometry;
+    }
+
+    function sampleGuidePoints(guide, steps = 256) {
+      const points = [];
+      for (let i = 0; i < steps; i++) {
+        points.push(new THREE.Vector2().copy(guidePoint(guide, (i / steps) * Math.PI * 2)));
+      }
+      return points;
+    }
+
+    function buildGuideRing(guide, color) {
+      const geometry = buildStrokeGeometry(sampleGuidePoints(guide), guide.width, true);
+      const material = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: CONFIG.ringOpacity, depthTest: false, side: THREE.DoubleSide });
+      return new THREE.Mesh(geometry, material);
+    }
+
+    function buildArrow(config) {
+      const group = new THREE.Group();
+      const material = new THREE.MeshBasicMaterial({ color: config.color, depthTest: false });
+      const shaft = new THREE.Mesh(new THREE.PlaneGeometry(1, config.shaftWidth), material);
+
+      const headGeometry = new THREE.BufferGeometry();
+      headGeometry.setAttribute('position', new THREE.Float32BufferAttribute([
+        0, 0, 0,
+        -config.headLength, config.headWidth, 0,
+        -config.headLength, -config.headWidth, 0,
+      ], 3));
+      const head = new THREE.Mesh(headGeometry, material);
+      group.add(shaft, head);
+
+      group.userData.setEndpoints = (tail, tip) => {
+        const dx = tip.x - tail.x;
+        const dy = tip.y - tail.y;
+        const length = Math.hypot(dx, dy);
+        const angle = Math.atan2(dy, dx);
+        const shaftLength = Math.max(0.001, length - config.headLength);
+
+        group.position.set(tail.x, tail.y, 0);
+        group.rotation.z = angle;
+        shaft.scale.set(shaftLength, 1, 1);
+        shaft.position.set(shaftLength / 2, 0, 0);
+        head.position.set(length, 0, 0);
+      };
+
+      return group;
+    }
+
+    function vec2(pair) {
+      return new THREE.Vector2(pair[0], pair[1]);
+    }
+
+    function runSelfChecks() {
+      console.assert(buildHullPoints().length > 20, 'Hull spline should have many sampled points.');
+      const outerSailPoints = buildSailPoints(CONFIG.sails.outer);
+      const innerSailPoints = buildSailPoints(CONFIG.sails.inner);
+      console.assert(outerSailPoints.length === CONFIG.sails.outer.steps + 1, 'Outer sail point count mismatch.');
+      console.assert(innerSailPoints.length === CONFIG.sails.inner.steps + 1, 'Inner sail point count mismatch.');
+      console.assert(Math.abs(outerSailPoints[0].y) < 1e-9 && Math.abs(innerSailPoints[0].y) < 1e-9, 'Sail luffs should start on the centerline.');
+      console.assert(outerSailPoints[outerSailPoints.length - 1].y > 0 && innerSailPoints[innerSailPoints.length - 1].y > 0, 'Sail clews should be to leeward in local coordinates.');
+      console.assert(objects.sails.group.children.length === 4, 'Expected two sail outline meshes and two luff highlights.');
+      console.assert(objects.chords.group.children.length === 4, 'Expected four guide lines.');
+      console.assert(!!objects.boatHandle && !!objects.worldHandle, 'Expected separate boat and world handles.');
+      console.assert(Math.abs(directedAngleFromWindDeg(0, 0)) < 1e-9, 'Parallel forward directions should read as 0° to Apparent Wind.');
+      console.assert(Math.abs(directedAngleFromWindDeg(0, 180) - 180) < 1e-9, 'Parallel opposite directions should read as 180° to Apparent Wind.');
+      console.assert(Math.abs(reportAngle180(225) - 135) < 1e-9, 'Reported angles should fold into the 0°..180° range.');
+      console.assert(Number.isFinite(getSailLeadingEdge(CONFIG.sails.outer).angleDeg), 'Aft leading-edge angle should be finite.');
+      console.assert(Number.isFinite(getSailLeadingEdge(CONFIG.sails.inner).angleDeg), 'Forward leading-edge angle should be finite.');
+      console.assert(Math.abs(undirectedLineAngleBetweenDeg(0, 180)) < 1e-9, 'Parallel opposite directions should read as 0° for undirected line angle.');
+      console.assert(Math.abs(undirectedLineAngleBetweenDeg(20, 180) - 20) < 1e-9, 'A 20° offset from the wind line should read as 20° for undirected line angle.');
+      console.assert(Math.abs(undirectedLineAngleBetweenDeg(90, 0) - 90) < 1e-9, 'A perpendicular line should read as 90° for undirected line angle.');
+      console.assert(Math.abs(directedAngleFromWindDeg(20, 0) - 20) < 1e-9, 'Directed wind angle should preserve clockwise offsets.');
+      console.assert(Number.isFinite(worldPointToGuideAngle(new THREE.Vector3(1, 1, 0), CONFIG.outerEllipse, 0)), 'Guide angle mapping should be finite.');
+      console.assert(Number.isFinite(worldPointToBoatAngle(new THREE.Vector3(1, 1, 0), 0)), 'Boat angle mapping should be finite.');
+      console.assert(Math.abs((() => {
+        const angle = THREE.MathUtils.degToRad(63);
+        const inner = guidePoint(CONFIG.innerEllipse, angle);
+        const outer = guidePoint(CONFIG.outerEllipse, angle);
+        return outer.length() - inner.length();
+      })() - CONFIG.outerEllipse.radialOffsetFromInner) < 1e-9, 'Outer guide should stay a constant radial distance from the inner guide.');
+      console.assert(Math.abs(THREE.MathUtils.radToDeg(snapAngleRadians(THREE.MathUtils.degToRad(3), THREE.MathUtils.degToRad(6), THREE.MathUtils.degToRad(90)))) < 1e-9, 'World angle should snap to zero inside threshold.');
+      console.assert(Math.abs(THREE.MathUtils.radToDeg(snapAngleRadians(THREE.MathUtils.degToRad(92), THREE.MathUtils.degToRad(6), THREE.MathUtils.degToRad(90))) - 90) < 1e-9, 'World angle should snap to the nearest quadrant inside threshold.');
+      console.assert(snapAngleRadians(THREE.MathUtils.degToRad(10), THREE.MathUtils.degToRad(6), THREE.MathUtils.degToRad(90)) !== 0, 'World angle should not snap outside threshold.');
+      console.assert(Math.abs(THREE.MathUtils.radToDeg(snapAngleRadians(THREE.MathUtils.degToRad(44), THREE.MathUtils.degToRad(2), THREE.MathUtils.degToRad(45))) - 45) < 1e-9, 'Boat angle should snap to 45-degree increments inside threshold.');
+      console.assert(Math.abs(THREE.MathUtils.radToDeg(snapAngleToIncrementsRadians(THREE.MathUtils.degToRad(29.5), THREE.MathUtils.degToRad(1), [THREE.MathUtils.degToRad(30), THREE.MathUtils.degToRad(45)])) - 30) < 1e-9, 'Wind angle should snap to 30-degree increments inside threshold.');
+      console.assert(Math.abs(THREE.MathUtils.radToDeg(snapAngleToIncrementsRadians(THREE.MathUtils.degToRad(44.4), THREE.MathUtils.degToRad(1), [THREE.MathUtils.degToRad(30), THREE.MathUtils.degToRad(45)])) - 45) < 1e-9, 'Wind angle should snap to 45-degree increments inside threshold.');
+      console.assert(Math.abs(THREE.MathUtils.radToDeg(snapAngleToIncrementsRadians(THREE.MathUtils.degToRad(31.5), THREE.MathUtils.degToRad(1), [THREE.MathUtils.degToRad(30), THREE.MathUtils.degToRad(45)])) - 31.5) < 1e-9, 'Wind angle should not snap outside threshold.');
+      console.assert(getTackInfo().mode === 'port', 'Default tack should start on port.');
+      console.assert(getTackInfo().boatToWindDeg > CONFIG.ironsThresholdDeg, 'Default pose should start outside irons.');
+      console.assert(getTackInfo().luffMode === 'none', 'Default pose should start with no luff highlight.');
+      console.assert(Math.abs((() => {
+        const testSignedWind = 6;
+        return Math.min(CONFIG.ironsLuffingChordCapDeg, Math.abs(testSignedWind));
+      })() - 6) < 1e-9, 'Irons luffing chord should use the smaller of the configured cap and apparent-wind angle.');
+      console.assert((() => {
+        const tack = { mode: 'irons', boatToWindDeg: 24 };
+        return tack.boatToWindDeg <= CONFIG.fullLuffThresholdDeg;
+      })(), 'Entire sail should go red when boat-to-wind is within the full-luff threshold in irons.');
+      console.assert((() => {
+        const tackSign = 1;
+        const tangentDeg = 12;
+        const windBoatDeg = 8;
+        const signedAngleToWind = tackSign * normalizeSignedDeg(windBoatDeg - tangentDeg);
+        return signedAngleToWind <= 0;
+      })(), 'Luff highlight should include sections at or below 0° to Apparent Wind.');
+      console.assert((() => {
+        const tackSign = 1;
+        const tangentDeg = 3;
+        const windBoatDeg = 8;
+        const signedAngleToWind = tackSign * normalizeSignedDeg(windBoatDeg - tangentDeg);
+        return signedAngleToWind > 0;
+      })(), 'Luff highlight should stop once the local sail angle becomes positive to Apparent Wind.');
+      console.assert(Math.abs((() => {
+        const unclamped = 92;
+        const signed = ((unclamped + 180) % 360) - 180;
+        return THREE.MathUtils.clamp(signed, -CONFIG.maxChordAngleToBoatDeg, CONFIG.maxChordAngleToBoatDeg);
+      })() - CONFIG.maxChordAngleToBoatDeg) < 1e-9, 'Chord angle should clamp to the configured max.');
+    }
+  </script>
+</body>
+</html>
