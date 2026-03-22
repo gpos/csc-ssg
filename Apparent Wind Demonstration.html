@@ -505,29 +505,32 @@ speedEl.addEventListener("input", () => {
       const x2 = cx + ux * len;
       const y2 = cy - uy * len; // screen y down, world y up
 
-      // shaft
-      ctx.strokeStyle = color;
-      const lw = Math.max(6, Math.round(shaftPx * 1.25));
-      ctx.lineWidth = lw;
-      ctx.lineCap = "round";
-      ctx.beginPath();
-      ctx.moveTo(cx, cy);
+      // arrow as a single filled polygon (avoids stroke overshoot / cap artifacts)
+      // Make dial arrows a bit thinner for legibility.
+      const lw = Math.max(5, Math.round(shaftPx * 0.62));
+      const headLen = Math.max(14, lw * 2.6);
+      const headWid = Math.max(14, lw * 2.9);
+      const shaftLen = Math.max(0, len - headLen);
       const dx = ux;
       const dy = -uy;
-      const back = lw * 0.55;
-      const x2s = x2 - dx * back;
-      const y2s = y2 - dy * back;
-      ctx.lineTo(x2s, y2s);
-      ctx.stroke();
+      const px = -dy;
+      const py = dx;
 
-      // head
-      const head = Math.max(10, lw * 2.2);
-      const ang = Math.atan2(-(uy), ux); // screen angle
+      const xS = cx + dx * shaftLen;
+      const yS = cy + dy * shaftLen;
+
       ctx.fillStyle = color;
       ctx.beginPath();
-      ctx.moveTo(x2, y2);
-      ctx.lineTo(x2 - head*Math.cos(ang-0.55), y2 - head*Math.sin(ang-0.55));
-      ctx.lineTo(x2 - head*Math.cos(ang+0.55), y2 - head*Math.sin(ang+0.55));
+      // shaft rectangle
+      ctx.moveTo(cx + px * (lw * 0.5), cy + py * (lw * 0.5));
+      ctx.lineTo(xS + px * (lw * 0.5), yS + py * (lw * 0.5));
+      // head base (wide)
+      ctx.lineTo(xS + px * (headWid * 0.5), yS + py * (headWid * 0.5));
+      ctx.lineTo(x2, y2);
+      ctx.lineTo(xS - px * (headWid * 0.5), yS - py * (headWid * 0.5));
+      // back down the other side of the shaft
+      ctx.lineTo(xS - px * (lw * 0.5), yS - py * (lw * 0.5));
+      ctx.lineTo(cx - px * (lw * 0.5), cy - py * (lw * 0.5));
       ctx.closePath();
       ctx.fill();
     }
